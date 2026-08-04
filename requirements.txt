@@ -1,0 +1,4 @@
+pandas>=2.0
+openpyxl>=3.1
+google-cloud-bigquery>=3.11   # si luego se conecta directo a BigQuery en vez del xlsx
+python-dateutil>=2.8

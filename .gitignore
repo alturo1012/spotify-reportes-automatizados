@@ -1,0 +1,24 @@
+# Entornos
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Datos y reportes (contienen info sensible / son grandes) — no van a git
+data/raw/*
+data/output/*
+!data/raw/.gitkeep
+!data/output/.gitkeep
+
+# Excel temporales
+~$*.xlsx
+~$*.xlsm
+
+# Editor / SO
+.vscode/
+.DS_Store
+
+# Credenciales
+.env
+*.json
+!package.json
