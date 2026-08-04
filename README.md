@@ -53,6 +53,6 @@ python -m src.main --semana 25 --fuente data/raw/Fuente_de_datos_BQ_Spotify.xlsx
 ## Estado del proyecto
 
 En desarrollo. Próximos pasos:
-- [ ] Mapear 1:1 las fórmulas/lógica de las plantillas actuales (`PLANTILLA_SEMANAL`, `PLANTILLA_MES`) a Python
+- [ x] Mapear 1:1 las fórmulas/lógica de las plantillas actuales (`PLANTILLA_SEMANAL`, `PLANTILLA_MES`) a Python
 - [ ] Validar reportes generados contra los reportes manuales existentes semana a semana
 - [ ] Programar la ejecución automática (GitHub Actions o tarea programada local)
