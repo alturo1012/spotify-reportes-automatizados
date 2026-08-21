@@ -1,0 +1,7 @@
+# Dependencias solo para código en experiments/ — separado de requirements.txt
+# (que son las dependencias ya validadas de src/) para no mezclar algo
+# todavía en pruebas con lo que corre en producción cada semana.
+#
+# Descomenta/ajusta según lo que use el código real que te compartan:
+# spotipy>=2.23        # cliente más común para la Web API de Spotify
+# python-dotenv>=1.0    # para cargar el .env con las credenciales
