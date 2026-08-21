@@ -22,3 +22,6 @@ data/output/*
 .env
 *.json
 !package.json
+
+experiments/**/.env
+.env
