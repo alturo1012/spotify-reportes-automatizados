@@ -2,9 +2,6 @@
 YTD (Market Share) y la serie histórica completa (Chart Semanal - Resumen
 Total).
 
-Ver claude/mapeo_logica_plantillas.md y claude/plan_fusion_paso_a_paso.md
-(Paso 2) para el diseño completo y por qué se decidió así.
-
 Dos tablas, ambas ya agregadas (no fila-por-fila / track-por-track):
 
 - `chart_band_weekly`: conteo de tracks Universal por banda/país/semana.
