@@ -70,6 +70,20 @@ def test_append_semana_continua_la_numeracion_de_semana(tmp_path):
     assert ms_df[ms_df.country_code == "CO"]["semana"].max() == 2
 
 
+def test_semana_ya_cargada_detecta_fecha_existente_y_ausente(tmp_path):
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Universal",
+         "streams_top200": 10.0, "chart_date": "2026-01-01"},
+    ]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+    assert history.semana_ya_cargada("2026-01-01") is True
+    assert history.semana_ya_cargada("2026-01-08") is False
+
+
 def test_append_semana_ms_escala_streams_a_millones(tmp_path):
     # Regresión del bug real que encontramos: el histórico sembrado guarda
     # streams en millones, y append_semana_ms tiene que aplicar el mismo
