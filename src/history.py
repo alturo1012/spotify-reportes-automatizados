@@ -205,6 +205,23 @@ def cargar_ms_label_weekly() -> pd.DataFrame:
         conn.close()
 
 
+def semana_ya_cargada(chart_date) -> bool:
+    """True si esta fecha ya fue guardada antes en el histórico (columna
+    `chart_date` de `ms_label_weekly`).
+
+    Existe para que `main.py` pueda correrse dos veces por error con el
+    mismo archivo fuente (por ejemplo, si el proceso se interrumpió a la
+    mitad) sin duplicar la semana: como `_proxima_semana()` siempre calcula
+    "la siguiente" sin mirar si la fecha ya estaba, hace falta este chequeo
+    aparte antes de llamar a `append_semana_chart` / `append_semana_ms`.
+    """
+    fecha_str = pd.Timestamp(chart_date).date().isoformat()
+    ms_df = cargar_ms_label_weekly()
+    if ms_df.empty:
+        return False
+    return fecha_str in set(ms_df["chart_date"])
+
+
 def query_ytd_ms(anio: int, hasta_semana: int) -> pd.DataFrame:
     """Filas de `ms_label_weekly` para un año, hasta cierta semana
     (inclusive) — el rango que necesita el cálculo YTD de Market Share
