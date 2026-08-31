@@ -22,3 +22,6 @@ data/output/*
 .env
 *.json
 !package.json
+
+# Base histórica local (se genera con scripts/sembrar_historico.py) - no se sube a git
+data/history/*.db
