@@ -1,6 +1,6 @@
 """Persistencia histórica: acumula semana a semana lo necesario para calcular
 YTD (Market Share) y la serie histórica completa (Chart Semanal - Resumen
-Total).
+Total)
 
 Dos tablas, ambas ya agregadas (no fila-por-fila / track-por-track):
 
@@ -121,7 +121,7 @@ def append_semana_chart(df_semana: pd.DataFrame) -> None:
     """
     fecha = _validar_una_sola_semana(df_semana)
     anio = fecha.year
-    mes = fecha.strftime("%B").upper()
+    mes = config.MESES_ES[fecha.month]
 
     conn = _conectar()
     try:
