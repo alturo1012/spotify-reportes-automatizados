@@ -1,8 +1,33 @@
 """Configuración central: rutas y constantes del proyecto.
+
+Ver claude/mapeo_logica_plantillas.md (en el Project de Claude) para el
+detalle y la evidencia (fórmulas/macro reales) detrás de cada constante de
+este archivo.
 """
+import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+
+def _calcular_root_dir() -> Path:
+    """Carpeta raíz del proyecto (donde viven `data/`, `src/`, etc.).
+
+    Separado en una función (en vez de calcularlo directo al importar el
+    módulo) para poder probarlo con pytest simulando `sys.frozen`, sin
+    depender de si el proceso de test mismo está o no empaquetado.
+    """
+    if getattr(sys, "frozen", False):
+        # Corriendo empaquetado como .exe (PyInstaller, ver build.bat / Paso
+        # 7): los datos (histórico, fuente, reportes de salida) tienen que
+        # vivir junto al .exe, NO en la carpeta temporal donde PyInstaller
+        # descomprime el código cada vez que arranca (esa carpeta se borra
+        # al cerrar la app -- si ROOT_DIR apuntara ahí, el histórico se
+        # "perdería" cada vez). Por eso: no muevas el .exe fuera de la
+        # carpeta del proyecto; si lo mueves, copia también `data/` con él.
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT_DIR = _calcular_root_dir()
 RAW_DIR = ROOT_DIR / "data" / "raw"
 OUTPUT_DIR = ROOT_DIR / "data" / "output"
 
@@ -34,6 +59,28 @@ PAISES_MS = [
     "CO", "PE", "EC", "CR", "GT", "PN", "HN", "SV", "NI",
     "DO", "AR", "CL", "BR", "MX", "SP", "PT", "VE",
 ]
+
+# Orden real de los bloques de país en la pestaña "Resumen Total" del
+# Reporte_Chart_Top_Semanal -- verificado 1:1 contra Reporte_Chart_Top
+# Semanal Spotify Latam a Sem 24 de 2026.xlsm (fila 5). Es un orden
+# distinto al de PAISES_MS (que se usa para Market Share) -- no es un
+# error, la plantilla original de Chart Semanal simplemente los ordena
+# distinto.
+ORDEN_PAISES_CHART = [
+    "CO", "PE", "EC", "PN", "CR", "GT", "SV", "HN", "NI", "DO",
+    "VE", "MX", "SP", "CL", "AR", "BR", "PT",
+]
+
+# Nombre de país tal cual aparece en los encabezados combinados de esa
+# misma pestaña (mayúsculas, sin tilde en "PERU"/"MEXICO" -- así está en el
+# archivo real) -- verificado 1:1 contra el archivo real.
+NOMBRE_PAIS_CHART = {
+    "CO": "COLOMBIA", "PE": "PERU", "EC": "ECUADOR", "PN": "PANAMA",
+    "CR": "COSTA RICA", "GT": "GUATEMALA", "SV": "SALVADOR", "HN": "HONDURAS",
+    "NI": "NICARAGUA", "DO": "DOMINICANA", "VE": "VENEZUELA", "MX": "MEXICO",
+    "SP": "ESPAÑA", "CL": "CHILE", "AR": "ARGENTINA", "BR": "BRASIL",
+    "PT": "PORTUGAL",
+}
 
 # Mapeo país (nombre completo, tal cual llega en la columna "country" de la
 # fuente BQ) -> código de 2 letras usado en las pestañas de los reportes.
@@ -114,6 +161,22 @@ MESES_ES = {
     5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
     9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
 }
+
+# Abreviado en minúscula, para el título "Week Ending - dd mmm, aaaa" del
+# listado de canciones (pestaña "Resumen Total", debajo de la serie
+# histórica) -- igual al formato de la plantilla original.
+MESES_ES_ABREV = {
+    1: "ene", 2: "feb", 3: "mar", 4: "abr",
+    5: "may", 6: "jun", 7: "jul", 8: "ago",
+    9: "sep", 10: "oct", 11: "nov", 12: "dic",
+}
+
+# Cuántas canciones como máximo se listan en el "listado de canciones" de
+# "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con
+# todas las canciones de una semana (pueden ser 1000+) la hoja queda
+# enorme y poco práctica; el usuario pidió dejar solo las mejores 200 (ya
+# ordenadas por cantidad de países y suma de posiciones).
+TOP_N_LISTADO_CANCIONES = 200
 
 CHART_SHEET_RESUMEN = "Resumen Total"
 CHART_SHEET_DETALLE = "Detalle Tracks"
