@@ -18,14 +18,55 @@ se acaba de cargar, no una serie histórica.
 """
 from pathlib import Path
 import pandas as pd
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
 
 from . import config, history
+
+# Layout de la pestaña "Resumen Total", replicando el formato visual de la
+# plantilla original (PLANTILLA_SEMANAL_ChartTop.xlsm / Reporte_Chart_Top
+# Semanal Spotify Latam a Sem 24 de 2026.xlsm), verificado columna por
+# columna contra ese archivo real:
+#   - Columnas A-D fijas (año / mes / semana / separador) + filas 1-6 fijas,
+#     con "congelar paneles" en E7 (freeze_panes) para que se vean siempre
+#     al desplazarse hacia la derecha o hacia abajo.
+#   - Cada país ocupa un bloque de 5 columnas (top10/30/50/100/200), con el
+#     nombre del país en una celda combinada en la fila 5 y los números de
+#     banda en la fila 6.
+#   - Una columna angosta de separación entre cada bloque de país (y entre
+#     las columnas fijas y el primer país).
+#   - Debajo de la serie histórica (con un salto de filas en blanco) va el
+#     "listado de canciones" de la semana actual: mismos bloques de país,
+#     pero en vez de un conteo, la posición real de cada canción en el país
+#     donde aparece (ver _escribir_listado_canciones).
+# NOTA: la plantilla original también trae una fila 1-2 con una leyenda
+# "TOP 10/30/50/100/200" y unos valores de referencia (3/9/15/30/60) que no
+# se pudieron confirmar de dónde salen (no son datos calculados) -- se dejó
+# fuera de este primer ajuste de formato a propósito; se puede agregar
+# después si hace falta.
+_COL_ANIO = 1
+_COL_MES = 2
+_COL_SEMANA = 3
+_COL_SEPARADOR_INICIAL = 4
+_COL_PRIMER_PAIS = 5
+_FILA_HEADER_PAIS = 5
+_FILA_HEADER_BANDA = 6
+_FILA_PRIMER_DATO = 7
+
+# Filas en blanco entre la última fila de la serie histórica y el título
+# "Week Ending - ..." del listado de canciones (equivale al gran salto de
+# filas -- "después de la fila 300" -- que tiene la plantilla original;
+# acá no hace falta reservar cientos de filas porque la tabla histórica
+# crece semana a semana, así que basta un salto corto y fijo).
+_FILAS_ANTES_DE_LISTADO = 2
 
 
 def construir_resumen_total() -> pd.DataFrame:
     """Serie histórica completa (todo lo acumulado en chart_band_weekly):
     una fila por semana, con columnas por país x banda, en el mismo orden
-    que la plantilla original (config.PAISES_MS x config.BANDAS_CHART).
+    que la plantilla original (config.ORDEN_PAISES_CHART x
+    config.BANDAS_CHART -- OJO, es un orden de país distinto al de
+    Market Share / config.PAISES_MS, ver la constante).
     """
     df = history.cargar_chart_band_weekly()
     if df.empty:
@@ -40,7 +81,7 @@ def construir_resumen_total() -> pd.DataFrame:
 
     columnas_ordenadas = [
         (pais, banda)
-        for pais in config.PAISES_MS
+        for pais in config.ORDEN_PAISES_CHART
         for banda in config.BANDAS_CHART
         if (pais, banda) in tabla.columns
     ]
@@ -48,6 +89,295 @@ def construir_resumen_total() -> pd.DataFrame:
     tabla.columns = [f"{pais}_top{banda}" for pais, banda in tabla.columns]
     tabla = tabla.reset_index().sort_values(["anio", "semana"])
     return tabla
+
+
+def _tier_de_posicion(posicion: int):
+    """A qué banda (10/30/50/100/200) pertenece una posición: la más chica
+    de config.BANDAS_CHART que la contiene (posición 9 -> banda 10,
+    posición 25 -> banda 30, etc.). None si no entra en ninguna (fuera del
+    Top 200).
+    """
+    for banda in config.BANDAS_CHART:
+        if posicion <= banda:
+            return banda
+    return None
+
+
+def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
+    """Listado de canciones de la semana que se acaba de cargar (NO es
+    histórico -- cambia por completo cada vez que se sube una fuente nueva,
+    igual que "Detalle Tracks"), una fila por canción con:
+
+    - "cancion": "Título / Artista".
+    - "region": tal cual viene de la fuente (Anglo/Latin/...). Se asume que
+      es la misma para todos los países donde aparece esa canción -- se usa
+      el primer valor visto por canción.
+    - Una columna por país donde esa canción aparece, con el número de
+      posición real puesto bajo la banda (10/30/50/100/200) a la que
+      pertenece esa posición (una sola celda no vacía por país, no las 5).
+      No lleva la fecha de lanzamiento -- no está disponible en la fuente
+      BQ (pendiente de una futura integración con la API de Spotify).
+    - "paises_presente": en cuántos países aparece.
+    - "suma_posiciones": suma de sus posiciones en todos esos países.
+
+    Orden de filas: por cantidad de países (de mayor a menor) y, para
+    empatar, por la suma de posiciones (de menor a mayor) -- así las
+    canciones que están en más países y mejor posicionadas quedan primero
+    ("las mejores canciones"). Es una decisión razonable, no algo pedido
+    explícito -- fácil de cambiar si no es el orden que se espera.
+
+    Solo devuelve las primeras config.TOP_N_LISTADO_CANCIONES (200 por
+    defecto) de ese orden -- pedido explícito del usuario, para no listar
+    las 1000+ canciones que puede traer una semana completa.
+    """
+    columnas_vacio = ["cancion", "region", "paises_presente", "suma_posiciones"]
+    if df_semana.empty:
+        return pd.DataFrame(columns=columnas_vacio)
+
+    df = df_semana.copy()
+    if "region" not in df.columns:
+        # Defensivo: "region" viene de la fuente BQ real (config.SOURCE_COLUMNS),
+        # pero no todo caller de prueba la incluye -- que falte no debe
+        # tumbar el reporte, solo queda esa columna en blanco.
+        df["region"] = None
+    df["cancion"] = (
+        df["song_name"].astype(str).str.strip() + " / " + df["artist"].astype(str).str.strip()
+    )
+    df["banda"] = df["position"].apply(_tier_de_posicion)
+    df = df.dropna(subset=["banda"])
+    if df.empty:
+        return pd.DataFrame(columns=columnas_vacio)
+    df["banda"] = df["banda"].astype(int)
+
+    resumen_cancion = df.groupby("cancion").agg(
+        region=("region", "first"),
+        paises_presente=("country_code", "nunique"),
+        suma_posiciones=("position", "sum"),
+    )
+
+    posiciones_por_pais = df.pivot_table(
+        index="cancion", columns=["country_code", "banda"], values="position", aggfunc="first"
+    )
+    posiciones_por_pais.columns = [
+        f"{pais}_top{banda}" for pais, banda in posiciones_por_pais.columns
+    ]
+
+    listado = resumen_cancion.join(posiciones_por_pais).reset_index()
+    listado = listado.sort_values(
+        ["paises_presente", "suma_posiciones"], ascending=[False, True]
+    ).reset_index(drop=True)
+    # Solo las mejores config.TOP_N_LISTADO_CANCIONES (por defecto 200) --
+    # pedido explícito del usuario, para no listar las 1000+ canciones de
+    # una semana completa.
+    return listado.head(config.TOP_N_LISTADO_CANCIONES).reset_index(drop=True)
+
+
+def _escribir_bloques_pais(ws, fila_header_pais: int, fila_header_banda: int, aplicar_anchos: bool):
+    """Escribe un juego de encabezados de país/banda (celda de país
+    combinada arriba, bandas 10/30/50/100/200 debajo, columna angosta de
+    separación entre países) empezando en _COL_PRIMER_PAIS -- lo usan tanto
+    la serie histórica (filas 5/6) como el listado de canciones (sus propias
+    filas de encabezado), para que ambos bloques queden alineados en las
+    mismas columnas.
+
+    `aplicar_anchos=False` evita volver a fijar el ancho de columnas ya
+    fijado la primera vez (los mismos países/bandas caen siempre en las
+    mismas columnas, así que no hace falta repetirlo).
+
+    Devuelve (columna_inicio_por_pais, columna_siguiente_libre) --
+    columna_siguiente_libre es la primera columna después del último país
+    (después de su separadora), útil para ubicar columnas extra a la
+    derecha del último bloque.
+    """
+    negrita_centrada = Font(bold=True)
+    centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    columna_inicio_por_pais: dict[str, int] = {}
+    columna_actual = _COL_PRIMER_PAIS
+    for pais in config.ORDEN_PAISES_CHART:
+        columna_inicio_por_pais[pais] = columna_actual
+        columna_fin_bloque = columna_actual + len(config.BANDAS_CHART) - 1
+
+        nombre_visible = config.NOMBRE_PAIS_CHART[pais]
+        celda_pais = ws.cell(row=fila_header_pais, column=columna_actual, value=nombre_visible)
+        ws.merge_cells(
+            start_row=fila_header_pais, start_column=columna_actual,
+            end_row=fila_header_pais, end_column=columna_fin_bloque,
+        )
+        celda_pais.alignment = centrado
+        celda_pais.font = negrita_centrada
+
+        for i, banda in enumerate(config.BANDAS_CHART):
+            celda_banda = ws.cell(row=fila_header_banda, column=columna_actual + i, value=banda)
+            celda_banda.alignment = centrado
+            celda_banda.font = negrita_centrada
+            if aplicar_anchos:
+                ws.column_dimensions[get_column_letter(columna_actual + i)].width = 4
+
+        columna_separadora = columna_fin_bloque + 1
+        if aplicar_anchos:
+            ws.column_dimensions[get_column_letter(columna_separadora)].width = 1.5
+        columna_actual = columna_separadora + 1
+
+    return columna_inicio_por_pais, columna_actual
+
+
+def _escribir_resumen_total(writer: pd.ExcelWriter, resumen: pd.DataFrame, df_semana: pd.DataFrame) -> None:
+    """Escribe la pestaña "Resumen Total": arriba la serie histórica
+    completa con el formato de la plantilla original (encabezados
+    combinados, columnas angostas, freeze_panes), y debajo -- después de un
+    salto de filas -- el listado de canciones de la semana actual (ver
+    construir_listado_canciones). Crea la hoja directo con openpyxl
+    (writer.book.create_sheet), en vez de con pandas .to_excel, porque acá
+    se necesita control celda por celda que .to_excel(...) no ofrece. (Un
+    ExcelWriter nuevo de pandas NO deja una hoja en blanco lista para usar
+    -- writer.book.active es None hasta que se crea una hoja.)
+    """
+    ws = writer.book.create_sheet(config.CHART_SHEET_RESUMEN)
+
+    negrita_centrada = Font(bold=True)
+    centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # "SEMANA / TOP" -- combinada verticalmente en las dos filas de encabezado
+    celda_semana = ws.cell(row=_FILA_HEADER_PAIS, column=_COL_SEMANA, value="SEMANA \n/ TOP")
+    ws.merge_cells(
+        start_row=_FILA_HEADER_PAIS, start_column=_COL_SEMANA,
+        end_row=_FILA_HEADER_BANDA, end_column=_COL_SEMANA,
+    )
+    celda_semana.alignment = centrado
+    celda_semana.font = negrita_centrada
+
+    # Columna A ("año" en la serie histórica, y "Artist/Título" en el
+    # listado de canciones de más abajo) más ancha de lo que necesita un año
+    # solo, para que los títulos largos tengan más espacio antes de
+    # desbordar visualmente hacia la columna B (que queda vacía en esas
+    # filas).
+    ws.column_dimensions[get_column_letter(_COL_ANIO)].width = 22
+    ws.column_dimensions[get_column_letter(_COL_MES)].width = 12
+    ws.column_dimensions[get_column_letter(_COL_SEMANA)].width = 10
+    ws.column_dimensions[get_column_letter(_COL_SEPARADOR_INICIAL)].width = 2
+
+    columna_inicio_por_pais, columna_siguiente_libre = _escribir_bloques_pais(
+        ws, _FILA_HEADER_PAIS, _FILA_HEADER_BANDA, aplicar_anchos=True
+    )
+
+    # Filas de datos de la serie histórica: el año solo se escribe la
+    # primera vez que aparece (igual que la plantilla original -- no está
+    # combinado, solo se deja en blanco en las filas siguientes del mismo
+    # año).
+    anio_anterior = None
+    for i, fila in enumerate(resumen.itertuples(index=False)):
+        r = _FILA_PRIMER_DATO + i
+        anio = int(fila.anio)
+        if anio != anio_anterior:
+            ws.cell(row=r, column=_COL_ANIO, value=anio)
+            anio_anterior = anio
+        ws.cell(row=r, column=_COL_MES, value=fila.mes)
+        ws.cell(row=r, column=_COL_SEMANA, value=int(fila.semana))
+
+        for pais in config.ORDEN_PAISES_CHART:
+            col_inicio = columna_inicio_por_pais[pais]
+            for i_banda, banda in enumerate(config.BANDAS_CHART):
+                nombre_columna = f"{pais}_top{banda}"
+                valor = getattr(fila, nombre_columna, None)
+                ws.cell(row=r, column=col_inicio + i_banda, value=valor)
+
+    ws.freeze_panes = f"{get_column_letter(_COL_PRIMER_PAIS)}{_FILA_PRIMER_DATO}"
+
+    ultima_fila_historica = _FILA_PRIMER_DATO + max(len(resumen) - 1, 0)
+    fila_listado = ultima_fila_historica + _FILAS_ANTES_DE_LISTADO + 1
+    _escribir_listado_canciones(
+        ws, df_semana, fila_listado, columna_inicio_por_pais, columna_siguiente_libre
+    )
+
+
+def _escribir_listado_canciones(
+    ws, df_semana: pd.DataFrame, fila_inicio: int,
+    columna_inicio_por_pais: dict, columna_siguiente_libre: int,
+) -> None:
+    """Escribe el bloque "listado de canciones" de la semana actual, debajo
+    de la serie histórica en la misma pestaña "Resumen Total" (ver
+    construir_listado_canciones para el detalle de qué contiene cada fila).
+    No lleva histórico: se reescribe por completo cada vez que se genera el
+    reporte, con la semana que se acaba de cargar.
+    """
+    if df_semana.empty:
+        return
+    listado = construir_listado_canciones(df_semana)
+    if listado.empty:
+        return
+
+    negrita = Font(bold=True)
+    centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    fecha = pd.Timestamp(df_semana["chart_date"].iloc[0])
+    texto_titulo = f"Week Ending - {fecha.day:02d} {config.MESES_ES_ABREV[fecha.month]}, {fecha.year}"
+    celda_titulo = ws.cell(row=fila_inicio, column=_COL_ANIO, value=texto_titulo)
+    celda_titulo.font = negrita
+
+    fila_header_pais = fila_inicio + 1
+    fila_header_banda = fila_header_pais + 1
+    fila_primer_dato = fila_header_banda + 1
+
+    celda_cancion = ws.cell(row=fila_header_pais, column=_COL_ANIO, value="Artist/Título")
+    ws.merge_cells(
+        start_row=fila_header_pais, start_column=_COL_ANIO,
+        end_row=fila_header_banda, end_column=_COL_MES,
+    )
+    celda_cancion.alignment = centrado
+    celda_cancion.font = negrita
+
+    celda_region = ws.cell(row=fila_header_pais, column=_COL_SEMANA, value="Región")
+    ws.merge_cells(
+        start_row=fila_header_pais, start_column=_COL_SEMANA,
+        end_row=fila_header_banda, end_column=_COL_SEMANA,
+    )
+    celda_region.alignment = centrado
+    celda_region.font = negrita
+
+    # Mismos encabezados de país/banda que la serie histórica, en las mismas
+    # columnas (no vuelve a fijar anchos -- ya quedaron fijos arriba).
+    _escribir_bloques_pais(ws, fila_header_pais, fila_header_banda, aplicar_anchos=False)
+
+    # Las dos columnas sin nombre que traía la plantilla original, al final
+    # de los bloques de país: cuántos países tiene esa canción, y la suma de
+    # sus posiciones en todos ellos.
+    col_paises = columna_siguiente_libre
+    col_suma = columna_siguiente_libre + 1
+
+    celda_paises = ws.cell(row=fila_header_pais, column=col_paises, value="N° Países")
+    ws.merge_cells(
+        start_row=fila_header_pais, start_column=col_paises,
+        end_row=fila_header_banda, end_column=col_paises,
+    )
+    celda_paises.alignment = centrado
+    celda_paises.font = negrita
+    ws.column_dimensions[get_column_letter(col_paises)].width = 9
+
+    celda_suma = ws.cell(row=fila_header_pais, column=col_suma, value="Suma Posiciones")
+    ws.merge_cells(
+        start_row=fila_header_pais, start_column=col_suma,
+        end_row=fila_header_banda, end_column=col_suma,
+    )
+    celda_suma.alignment = centrado
+    celda_suma.font = negrita
+    ws.column_dimensions[get_column_letter(col_suma)].width = 9
+
+    for i, fila in enumerate(listado.itertuples(index=False)):
+        r = fila_primer_dato + i
+        ws.cell(row=r, column=_COL_ANIO, value=fila.cancion)
+        ws.cell(row=r, column=_COL_SEMANA, value=fila.region)
+
+        for pais in config.ORDEN_PAISES_CHART:
+            col_inicio = columna_inicio_por_pais[pais]
+            for i_banda, banda in enumerate(config.BANDAS_CHART):
+                nombre_columna = f"{pais}_top{banda}"
+                valor = getattr(fila, nombre_columna, None)
+                if pd.notna(valor):
+                    ws.cell(row=r, column=col_inicio + i_banda, value=int(valor))
+
+        ws.cell(row=r, column=col_paises, value=int(fila.paises_presente))
+        ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))
 
 
 def construir_detalle_tracks(df_semana: pd.DataFrame) -> pd.DataFrame:
@@ -68,7 +398,8 @@ def generar_reporte(
     semana nueva (el que devuelve load_data.load_source). Guarda esa semana
     en el histórico (a menos que ya se haya guardado antes, con
     guardar_en_historico=False) y arma "Resumen Total" con TODO el
-    histórico acumulado, y "Detalle Tracks" solo con la semana actual.
+    histórico acumulado más el listado de canciones de la semana actual, y
+    "Detalle Tracks" solo con la semana actual.
     """
     if guardar_en_historico:
         history.append_semana_chart(df_semana)
@@ -77,7 +408,7 @@ def generar_reporte(
     detalle = construir_detalle_tracks(df_semana)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        resumen.to_excel(writer, sheet_name=config.CHART_SHEET_RESUMEN, index=False)
+        _escribir_resumen_total(writer, resumen, df_semana)
         detalle.to_excel(writer, sheet_name=config.CHART_SHEET_DETALLE, index=False)
 
     return output_path
