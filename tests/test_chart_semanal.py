@@ -74,7 +74,10 @@ def test_append_semana_chart_guarda_mes_en_espanol_no_en_ingles(tmp_path):
     assert chart_df["mes"].iloc[0] == "JUNIO"
 
 
-def test_construir_detalle_tracks_ordena_por_pais_y_posicion(tmp_path):
+def test_construir_detalle_tracks_arma_una_fila_por_posicion_con_una_columna_por_pais(tmp_path):
+    # Formato ancho (Ajuste 4): antes era una tabla larga (una fila por
+    # país+posición); ahora una fila por posición con un país por columna,
+    # para que se vea como la plantilla original.
     df_semana = pd.DataFrame({
         "country_code": ["PE", "CO", "CO"],
         "chart_date": pd.to_datetime(["2026-06-18"] * 3),
@@ -86,8 +89,18 @@ def test_construir_detalle_tracks_ordena_por_pais_y_posicion(tmp_path):
         "label_name": ["UMG", "Sony Music", "UMG"],
     })
     detalle = chart_semanal.construir_detalle_tracks(df_semana)
-    assert list(detalle["country_code"]) == ["CO", "CO", "PE"]
-    assert list(detalle["position"]) == [1, 2, 1]
+
+    assert list(detalle["position"]) == [1, 2]  # 2 posiciones distintas, no 3 filas
+    fila_pos1 = detalle.loc[detalle["position"] == 1].iloc[0]
+    assert fila_pos1["CO"] == "z / c"  # posición 1 en Colombia
+    assert fila_pos1["PE"] == "x / a"  # posición 1 en Perú
+    fila_pos2 = detalle.loc[detalle["position"] == 2].iloc[0]
+    assert fila_pos2["CO"] == "y / b"
+    assert pd.isna(fila_pos2["PE"])  # Perú no tiene track en la posición 2 esta semana
+
+
+def test_construir_detalle_tracks_vacio_no_falla(tmp_path):
+    assert chart_semanal.construir_detalle_tracks(pd.DataFrame()).empty
 
 
 def test_conteo_universal_coincide_con_datos_reales_de_colombia_semana_24(tmp_path):
@@ -147,8 +160,43 @@ def test_generar_reporte_escribe_las_dos_pestanas(tmp_path):
     assert salida.exists()
     wb = openpyxl.load_workbook(salida)
     assert wb.sheetnames == [config.CHART_SHEET_RESUMEN, config.CHART_SHEET_DETALLE]
-    detalle = pd.read_excel(salida, sheet_name=config.CHART_SHEET_DETALLE)
-    assert len(detalle) == 1
+
+
+def test_detalle_tracks_columna_posicion_y_encabezados_quedan_fijos(tmp_path):
+    # Ajuste 4: columna de posición fija a la izquierda, fila de
+    # semana/fecha + encabezado de país fijas arriba (freeze_panes) --
+    # sin color todavía (el usuario no tiene definido el criterio de
+    # colores para esta pestaña).
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO", "PE"],
+        "chart_date": pd.to_datetime(["2026-06-18"] * 2),
+        "position": [1, 1],
+        "artist": ["a", "b"],
+        "song_name": ["x", "y"],
+        "stream_count": [1_000_000, 1_000_000],
+        "label_group": ["Universal", "Universal"],
+        "label_name": ["UMG", "UMG"],
+    })
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.CHART_SHEET_DETALLE]
+
+    assert ws.cell(row=1, column=1).value == "Week Ending - 18 jun, 2026"
+    assert ws.cell(row=2, column=1).value == "Position"
+    assert ws.cell(row=2, column=2).value == "CO"  # primer país -> orden de config.ORDEN_PAISES_CHART
+    assert ws.cell(row=3, column=1).value == 1
+    assert ws.cell(row=3, column=2).value == "x / a"
+    # sin relleno de color en esta pestaña todavía
+    assert ws.cell(row=3, column=2).fill.fgColor.rgb in (None, "00000000")
+    assert ws.freeze_panes == "B3"  # columna A (posición) + filas 1-2 fijas
 
 
 def test_resumen_total_replica_el_formato_de_la_plantilla_original(tmp_path):

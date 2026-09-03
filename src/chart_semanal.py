@@ -12,9 +12,14 @@ aproximación automatizable, pero no hay garantía matemática de que coincida
 100% con el criterio manual — validar contra la primera semana real de uso
 antes de confiar en el número (Paso 6 del plan).
 
-"Detalle Tracks" NO lleva histórico acumulado a propósito (decisión
-confirmada con el usuario): cada reporte muestra el detalle de la semana que
-se acaba de cargar, no una serie histórica.
+"Detalle Tracks" y el listado de canciones de "Resumen Total" siguen
+mostrando SOLO la semana que se acaba de cargar, no una serie histórica
+(decisión confirmada con el usuario) -- pero desde este cambio, el detalle
+track por track de cada semana sí se GUARDA aparte en
+`history.chart_track_weekly` (vía `history.append_semana_tracks`), para no
+perderlo cuando se cargue la semana siguiente. Es guardado "hacia adelante"
+nada más: no tiene sembrado retroactivo de semanas anteriores a este cambio
+(ver la nota sobre "backfill" en claude/plan_fusion_paso_a_paso.md).
 """
 from pathlib import Path
 import pandas as pd
@@ -422,15 +427,88 @@ def _escribir_listado_canciones(
         ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))
 
 
+# Layout de "Detalle Tracks": posición (1-200) fija a la izquierda y un
+# país por columna, con la canción que ocupa esa posición en ese país esa
+# semana ("Título / Artista", igual que el listado de canciones de "Resumen
+# Total"). Fila de título (semana/fecha) y fila de encabezado de país fijas
+# arriba con freeze_panes -- igual idea que "Resumen Total", pero sin las
+# bandas 10/30/50/100/200 (acá cada país es una sola columna, no un bloque)
+# y sin color todavía (el usuario no tiene definido qué deberían significar
+# los colores de esta pestaña, se deja para más adelante).
+_DETALLE_COL_POSICION = 1
+_DETALLE_COL_PRIMER_PAIS = 2
+_DETALLE_FILA_TITULO = 1
+_DETALLE_FILA_HEADER_PAIS = 2
+_DETALLE_FILA_PRIMER_DATO = 3
+
+
 def construir_detalle_tracks(df_semana: pd.DataFrame) -> pd.DataFrame:
-    """Detalle track por track (posición 1-200) de la semana que se acaba
-    de cargar, por país. Sin histórico — ver advertencia del módulo.
+    """Detalle track por track de la semana que se acaba de cargar: una fila
+    por posición (1-200), una columna por país (config.ORDEN_PAISES_CHART),
+    con el texto "Título / Artista" de la canción que ocupa esa posición en
+    ese país. Sin histórico — ver advertencia del módulo.
+
+    Antes esta función devolvía una tabla larga (una fila por país+posición,
+    con columnas country_code/chart_date/position/artist/song_name/
+    stream_count/label_group/label_name); se cambió a esta tabla ancha para
+    que la pestaña se vea como la plantilla original -- OJO, con el cambio
+    se dejan de mostrar stream_count/label_group/label_name (no se pidieron
+    para este formato); avisar si hacen falta en otro lado.
     """
-    columnas = [
-        "country_code", "chart_date", "position", "artist", "song_name",
-        "stream_count", "label_group", "label_name",
-    ]
-    return df_semana[columnas].sort_values(["country_code", "position"])
+    if df_semana.empty:
+        return pd.DataFrame(columns=["position"])
+
+    df = df_semana.copy()
+    df["cancion"] = (
+        df["song_name"].astype(str).str.strip() + " / " + df["artist"].astype(str).str.strip()
+    )
+    tabla = df.pivot_table(index="position", columns="country_code", values="cancion", aggfunc="first")
+    columnas_ordenadas = [pais for pais in config.ORDEN_PAISES_CHART if pais in tabla.columns]
+    tabla = tabla[columnas_ordenadas]
+    tabla = tabla.reset_index().sort_values("position").reset_index(drop=True)
+    return tabla
+
+
+def _escribir_detalle_tracks(ws, df_semana: pd.DataFrame, tabla: pd.DataFrame) -> None:
+    """Escribe la pestaña "Detalle Tracks" con el layout de arriba
+    (_DETALLE_COL_*/_DETALLE_FILA_*) -- se crea la hoja aparte con openpyxl
+    en vez de con `.to_excel(...)` para poder fijar (freeze_panes) la
+    columna de posición y la fila de encabezado, igual que en "Resumen
+    Total".
+    """
+    if tabla.empty:
+        return
+
+    negrita = Font(bold=True)
+    centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    fecha = pd.Timestamp(df_semana["chart_date"].iloc[0])
+    texto_titulo = f"Week Ending - {fecha.day:02d} {config.MESES_ES_ABREV[fecha.month]}, {fecha.year}"
+    celda_titulo = ws.cell(row=_DETALLE_FILA_TITULO, column=_DETALLE_COL_POSICION, value=texto_titulo)
+    celda_titulo.font = negrita
+
+    celda_posicion = ws.cell(row=_DETALLE_FILA_HEADER_PAIS, column=_DETALLE_COL_POSICION, value="Position")
+    celda_posicion.font = negrita
+    celda_posicion.alignment = centrado
+    ws.column_dimensions[get_column_letter(_DETALLE_COL_POSICION)].width = 10
+
+    columnas_pais = [c for c in tabla.columns if c != "position"]
+    for i, pais in enumerate(columnas_pais):
+        col = _DETALLE_COL_PRIMER_PAIS + i
+        celda = ws.cell(row=_DETALLE_FILA_HEADER_PAIS, column=col, value=pais)
+        celda.font = negrita
+        celda.alignment = centrado
+        ws.column_dimensions[get_column_letter(col)].width = 24
+
+    for i, fila in enumerate(tabla.itertuples(index=False)):
+        r = _DETALLE_FILA_PRIMER_DATO + i
+        ws.cell(row=r, column=_DETALLE_COL_POSICION, value=int(fila.position))
+        for j, pais in enumerate(columnas_pais):
+            valor = getattr(fila, pais, None)
+            if pd.notna(valor):
+                ws.cell(row=r, column=_DETALLE_COL_PRIMER_PAIS + j, value=valor)
+
+    ws.freeze_panes = f"{get_column_letter(_DETALLE_COL_PRIMER_PAIS)}{_DETALLE_FILA_PRIMER_DATO}"
 
 
 def generar_reporte(
@@ -439,18 +517,25 @@ def generar_reporte(
     """Genera el reporte de Chart Semanal a partir del DataFrame de la
     semana nueva (el que devuelve load_data.load_source). Guarda esa semana
     en el histórico (a menos que ya se haya guardado antes, con
-    guardar_en_historico=False) y arma "Resumen Total" con TODO el
-    histórico acumulado más el listado de canciones de la semana actual, y
-    "Detalle Tracks" solo con la semana actual.
+    guardar_en_historico=False) -- tanto el conteo agregado
+    (`chart_band_weekly`, para "Resumen Total") como el detalle track por
+    track (`chart_track_weekly`, para no perder "Detalle Tracks"/el listado
+    de canciones de esta semana aunque el reporte solo muestre la semana
+    actual) -- y arma "Resumen Total" con TODO el histórico acumulado más el
+    listado de canciones de la semana actual, y "Detalle Tracks" solo con la
+    semana actual (posición fija x país por columna, ver
+    construir_detalle_tracks / _escribir_detalle_tracks).
     """
     if guardar_en_historico:
         history.append_semana_chart(df_semana)
+        history.append_semana_tracks(df_semana)
 
     resumen = construir_resumen_total()
     detalle = construir_detalle_tracks(df_semana)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         _escribir_resumen_total(writer, resumen, df_semana)
-        detalle.to_excel(writer, sheet_name=config.CHART_SHEET_DETALLE, index=False)
+        ws_detalle = writer.book.create_sheet(config.CHART_SHEET_DETALLE)
+        _escribir_detalle_tracks(ws_detalle, df_semana, detalle)
 
     return output_path

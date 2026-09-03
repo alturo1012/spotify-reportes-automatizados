@@ -84,6 +84,66 @@ def test_semana_ya_cargada_detecta_fecha_existente_y_ausente(tmp_path):
     assert history.semana_ya_cargada("2026-01-08") is False
 
 
+def test_append_semana_tracks_guarda_una_fila_por_track_y_numera_la_semana(tmp_path):
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO", "PE"],
+        "chart_date": pd.to_datetime(["2026-06-18"] * 2),
+        "position": [1, 5],
+        "artist": ["a", "b"],
+        "song_name": ["x", "y"],
+        "stream_count": [1_000_000, 500_000],
+        "label_group": ["Universal", "Sony"],
+        "label_name": ["UMG", "Sony Music"],
+        "region": ["Latin", "Anglo"],
+    })
+    # Igual que append_semana_chart/append_semana_ms: cada llamada numera
+    # "la siguiente" semana, no es idempotente por sí sola -- lo que evita
+    # duplicar una semana es el chequeo previo de history.semana_ya_cargada
+    # en main.py (ver test_main_corrido_dos_veces_con_la_misma_fuente...).
+    history.append_semana_tracks(df_semana)
+
+    tracks_df = history.cargar_chart_track_weekly()
+    assert len(tracks_df) == 2
+    assert set(tracks_df["semana"]) == {1}  # primera semana de esa base -> 1
+
+    fila_co = tracks_df[tracks_df.country_code == "CO"].iloc[0]
+    assert fila_co["artist"] == "a" and fila_co["song_name"] == "x"
+    assert fila_co["region"] == "Latin"
+
+    otra_semana = history.cargar_tracks_de_semana(2026, 1)
+    assert len(otra_semana) == 2
+    assert history.cargar_tracks_de_semana(2026, 2).empty  # esa semana no existe todavía
+
+
+def test_append_semana_tracks_sin_columnas_opcionales_no_falla(tmp_path):
+    # region/stream_count/label_group/label_name pueden faltar (algunos
+    # callers de prueba no las incluyen) -- no debe tumbar el guardado.
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"],
+        "chart_date": pd.to_datetime(["2026-06-18"]),
+        "position": [1],
+        "artist": ["a"],
+        "song_name": ["x"],
+    })
+    history.append_semana_tracks(df_semana)
+
+    tracks_df = history.cargar_chart_track_weekly()
+    assert len(tracks_df) == 1
+    assert pd.isna(tracks_df.iloc[0]["region"])
+
+
 def test_append_semana_ms_escala_streams_a_millones(tmp_path):
     # Regresión del bug real que encontramos: el histórico sembrado guarda
     # streams en millones, y append_semana_ms tiene que aplicar el mismo

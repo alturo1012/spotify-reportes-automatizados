@@ -1,20 +1,33 @@
 """Persistencia histórica: acumula semana a semana lo necesario para calcular
 YTD (Market Share) y la serie histórica completa (Chart Semanal - Resumen
-Total)
+Total).
 
-Dos tablas, ambas ya agregadas (no fila-por-fila / track-por-track):
+Ver claude/mapeo_logica_plantillas.md y claude/plan_fusion_paso_a_paso.md
+(Paso 2) para el diseño completo y por qué se decidió así.
 
-- `chart_band_weekly`: conteo de tracks Universal por banda/país/semana.
-  Alimenta "Resumen Total" del Reporte_Chart_Top_Semanal.
-- `ms_label_weekly`: streams Top 200 por sello/país/semana.
+Tres tablas:
+
+- `chart_band_weekly`: conteo de tracks Universal por banda/país/semana
+  (agregado). Alimenta "Resumen Total" del Reporte_Chart_Top_Semanal.
+- `ms_label_weekly`: streams Top 200 por sello/país/semana (agregado).
   Alimenta el "% Market Share" del Reporte_MS_TOP200.
+- `chart_track_weekly`: track por track (posición, artista, canción) por
+  país/semana -- a diferencia de las otras dos, NO es agregada. Existe para
+  no perder el detalle de "Detalle Tracks"/listado de canciones semana a
+  semana (esas pestañas del reporte solo muestran la semana que se acaba de
+  cargar, sin histórico -- esta tabla es lo que permite, más adelante,
+  consultar qué traía cualquier semana pasada sin tener que guardar el
+  Excel de cada semana aparte). Empezó a llenarse a partir de la semana en
+  que se agregó (no tiene sembrado retroactivo de semanas anteriores a
+  eso -- ver "Nota" en claude/plan_fusion_paso_a_paso.md sobre qué tomaría
+  rellenar semanas viejas si hiciera falta).
 
-Ambas se siembran UNA VEZ con `seed_historico()` a partir de los CSV ya
-extraídos de los reportes/plantillas reales (ver `extraer_historico.py` en
-el Project — no forma parte del repo, es un script de un solo uso), y luego
-se extienden semana a semana con `append_semana_chart()` /
-`append_semana_ms()` usando el mismo método de cálculo, para que el
-historial quede continuo entre lo viejo y lo nuevo.
+Las dos primeras se sembraron UNA VEZ con `seed_historico()` a partir de los
+CSV ya extraídos de los reportes/plantillas reales (ver `extraer_historico.py`
+en el Project — no forma parte del repo, es un script de un solo uso), y las
+tres se extienden semana a semana con `append_semana_chart()` /
+`append_semana_ms()` / `append_semana_tracks()` usando el mismo método de
+cálculo, para que el historial quede continuo entre lo viejo y lo nuevo.
 
 La numeración de "semana" es secuencial por año (1, 2, 3... desde la
 primera semana cargada de ese año) — igual que las plantillas originales,
@@ -61,6 +74,25 @@ def _conectar() -> sqlite3.Connection:
             streams_top200 REAL NOT NULL,
             chart_date TEXT,
             PRIMARY KEY (anio, semana, country_code, label_group)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chart_track_weekly (
+            anio INTEGER NOT NULL,
+            semana INTEGER NOT NULL,
+            mes TEXT,
+            chart_date TEXT,
+            country_code TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            artist TEXT,
+            song_name TEXT,
+            region TEXT,
+            stream_count REAL,
+            label_group TEXT,
+            label_name TEXT,
+            PRIMARY KEY (anio, semana, country_code, position)
         )
         """
     )
@@ -183,6 +215,73 @@ def append_semana_ms(df_semana: pd.DataFrame) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def append_semana_tracks(df_semana: pd.DataFrame) -> None:
+    """Guarda el detalle track por track (posición, artista, canción, país)
+    de la semana que trae `df_semana` en `chart_track_weekly`, continuando
+    su propia numeración de semana (independiente de `chart_band_weekly`,
+    igual que `ms_label_weekly` -- en la práctica quedan sincronizadas
+    porque siempre se llaman juntas en la misma corrida, ver
+    chart_semanal.generar_reporte).
+
+    A diferencia de `append_semana_chart` (que agrega/cuenta), acá se guarda
+    una fila por cada track de Top 200 tal cual viene de la fuente -- hasta
+    200 x 17 países = ~3400 filas por semana.
+    """
+    fecha = _validar_una_sola_semana(df_semana)
+    anio = fecha.year
+    mes = config.MESES_ES[fecha.month]
+    fecha_str = fecha.date().isoformat()
+
+    df = df_semana.copy()
+    for columna_opcional in ("region", "stream_count", "label_group", "label_name"):
+        if columna_opcional not in df.columns:
+            df[columna_opcional] = None
+
+    top200 = df[df["position"] <= 200]
+
+    conn = _conectar()
+    try:
+        semana = _proxima_semana(conn, "chart_track_weekly", anio)
+        filas = [
+            (
+                anio, semana, mes, fecha_str, fila.country_code, int(fila.position),
+                fila.artist, fila.song_name, fila.region, fila.stream_count,
+                fila.label_group, fila.label_name,
+            )
+            for fila in top200.itertuples(index=False)
+        ]
+
+        conn.executemany(
+            """INSERT OR REPLACE INTO chart_track_weekly
+               (anio, semana, mes, chart_date, country_code, position, artist,
+                song_name, region, stream_count, label_group, label_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            filas,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def cargar_chart_track_weekly() -> pd.DataFrame:
+    conn = _conectar()
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM chart_track_weekly ORDER BY anio, semana, country_code, position", conn
+        )
+    finally:
+        conn.close()
+
+
+def cargar_tracks_de_semana(anio: int, semana: int) -> pd.DataFrame:
+    """Detalle track por track de una semana puntual ya guardada -- para
+    reconstruir "Detalle Tracks"/el listado de canciones de una semana
+    pasada sin tener que volver a abrir el Excel de ese momento.
+    """
+    df = cargar_chart_track_weekly()
+    return df[(df["anio"] == anio) & (df["semana"] == semana)]
 
 
 def cargar_chart_band_weekly() -> pd.DataFrame:
