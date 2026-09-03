@@ -48,6 +48,15 @@ SEED_CHART_CSV = SEED_DIR / "seed_chart_band_weekly.csv"
 SEED_MS_CSV = SEED_DIR / "seed_ms_label_weekly.csv"
 
 
+def conectar() -> sqlite3.Connection:
+    """Punto de entrada público a la misma base SQLite del proyecto
+    (universal_data.db), para que otros módulos (ej. spotify_release_dates.py)
+    puedan agregar sus propias tablas de caché ahí en vez de abrir un
+    archivo aparte -- todo el histórico y las cachés quedan en un solo
+    archivo, más fácil de respaldar/mover."""
+    return _conectar()
+
+
 def _conectar() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)

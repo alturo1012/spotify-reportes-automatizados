@@ -404,3 +404,127 @@ def test_resumen_total_colorea_conteo_universal_segun_participacion(tmp_path):
     assert celda_co.value == 2 and celda_co.fill.fgColor.rgb.endswith(config.COLOR_SEMAFORO_ROJO)
     assert celda_pe.value == 3 and celda_pe.fill.fgColor.rgb.endswith(config.COLOR_SEMAFORO_AMARILLO)
     assert celda_ec.value == 5 and celda_ec.fill.fgColor.rgb.endswith(config.COLOR_SEMAFORO_VERDE)
+
+
+# --- Fecha de Lanzamiento (vía Spotify, ver spotify_release_dates.py) ---
+
+class _ClienteSpotifyFalso:
+    """Doble de prueba de spotify_release_dates.SpotifyReleaseDateClient --
+    no llama a la red, para poder probar la columna "Fecha de Lanzamiento"
+    de forma determinista."""
+
+    def __init__(self, id_por_isrc: dict, fecha_por_id: dict):
+        self.id_por_isrc = id_por_isrc
+        self.fecha_por_id = fecha_por_id
+
+    def buscar_track_id_por_isrc(self, isrc):
+        return self.id_por_isrc.get(isrc)
+
+    def fechas_de_lanzamiento(self, track_ids):
+        return {tid: self.fecha_por_id.get(tid) for tid in track_ids}
+
+
+def test_construir_listado_canciones_isrc_por_defecto_none_si_falta_columna():
+    # "ISRC" viene de la fuente BQ real (config.SOURCE_COLUMNS), pero no
+    # todo caller de prueba la incluye -- que falte no debe tumbar el
+    # reporte, solo queda sin poder resolver la fecha de lanzamiento.
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"], "chart_date": pd.to_datetime(["2026-06-18"]),
+        "position": [1], "artist": ["a"], "song_name": ["x"],
+        "stream_count": [1_000_000], "label_group": ["Universal"], "label_name": ["UMG"],
+        "region": ["Latin"],
+    })
+    listado = chart_semanal.construir_listado_canciones(df_semana)
+    assert pd.isna(listado.iloc[0]["isrc"])
+
+
+def test_agregar_fecha_lanzamiento_resuelve_desde_isrc_con_cliente_de_prueba():
+    listado = pd.DataFrame({"cancion": ["a / x", "b / y"], "isrc": ["ISRC1", "ISRC2"]})
+    cliente = _ClienteSpotifyFalso(
+        id_por_isrc={"ISRC1": "track1", "ISRC2": "track2"},
+        fecha_por_id={"track1": "2019-01-01", "track2": "2021-05-05"},
+    )
+    resultado = chart_semanal.agregar_fecha_lanzamiento(listado, cliente=cliente)
+    assert list(resultado["fecha_lanzamiento"]) == ["2019-01-01", "2021-05-05"]
+
+
+def test_agregar_fecha_lanzamiento_sin_credenciales_no_rompe_el_reporte(tmp_path, monkeypatch):
+    # Si no hay SPOTIFY_CLIENT_ID/SECRET configurados (ej. la primera vez
+    # que se corre esto, antes de armar el .env) o la API falla por
+    # cualquier motivo, la columna queda en blanco para esta corrida en vez
+    # de tumbar todo el reporte -- se vuelve a intentar la próxima vez.
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
+    listado = pd.DataFrame({"cancion": ["a / x"], "isrc": ["ISRC1"]})
+    resultado = chart_semanal.agregar_fecha_lanzamiento(listado, cliente=None)
+    assert resultado["fecha_lanzamiento"].iloc[0] is None
+
+
+def test_agregar_fecha_lanzamiento_listado_vacio_no_rompe():
+    resultado = chart_semanal.agregar_fecha_lanzamiento(pd.DataFrame(columns=["cancion", "isrc"]))
+    assert "fecha_lanzamiento" in resultado.columns
+    assert resultado.empty
+
+
+def test_listado_canciones_incluye_fecha_de_lanzamiento_con_cliente_de_prueba(tmp_path):
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"],
+        "chart_date": pd.to_datetime(["2026-06-18"]),
+        "position": [1],
+        "artist": ["a"],
+        "song_name": ["x"],
+        "stream_count": [1_000_000],
+        "label_group": ["Universal"],
+        "label_name": ["UMG"],
+        "region": ["Latin"],
+        "ISRC": ["ISRC_X"],
+    })
+    cliente = _ClienteSpotifyFalso(
+        id_por_isrc={"ISRC_X": "trackX"}, fecha_por_id={"trackX": "2020-03-15"},
+    )
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida, cliente_spotify=cliente)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.CHART_SHEET_RESUMEN]
+
+    # Mismo layout que test_resumen_total_incluye_el_listado_de_canciones...:
+    # col_paises=107, col_suma=108 (17 países x 6 columnas empezando en la 5) -> Fecha de Lanzamiento en la 109.
+    col_fecha = 109
+    assert ws.cell(row=11, column=col_fecha).value == "Fecha de Lanzamiento"
+    assert ws.cell(row=13, column=col_fecha).value == "2020-03-15"
+
+
+def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypatch):
+    # Escenario real: el usuario corre el reporte antes de configurar el
+    # .env de Spotify -- el reporte se tiene que seguir generando igual,
+    # solo sin la columna de fecha llena.
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
+
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"], "chart_date": pd.to_datetime(["2026-06-18"]),
+        "position": [1], "artist": ["a"], "song_name": ["x"],
+        "stream_count": [1_000_000], "label_group": ["Universal"], "label_name": ["UMG"],
+        "region": ["Latin"], "ISRC": ["ISRC_X"],
+    })
+    salida = tmp_path / "reporte.xlsx"
+    # No debe lanzar excepción.
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.CHART_SHEET_RESUMEN]
+    assert ws.cell(row=11, column=109).value == "Fecha de Lanzamiento"
+    assert ws.cell(row=13, column=109).value is None
