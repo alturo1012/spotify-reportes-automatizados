@@ -48,7 +48,7 @@ def test_generar_devuelve_las_rutas_de_los_dos_reportes_generados(tmp_path):
     history.seed_historico(*_seed_vacio())
     fuente = _fuente_minima(tmp_path)
 
-    chart_out, ms_out = gui.generar(str(fuente), "25")
+    chart_out, ms_out, _aviso = gui.generar(str(fuente), "25")
 
     assert chart_out.exists()
     assert ms_out.exists()
@@ -59,3 +59,19 @@ def test_generar_devuelve_las_rutas_de_los_dos_reportes_generados(tmp_path):
 def test_generar_propaga_el_error_si_el_archivo_no_existe(tmp_path):
     with pytest.raises(SystemExit, match="No se encontró el archivo fuente"):
         gui.generar(str(tmp_path / "no_existe.xlsx"), "25")
+
+
+def test_generar_devuelve_el_aviso_cuando_falla_spotify(tmp_path, monkeypatch):
+    # Regresión del problema real con el .exe: sin credenciales de Spotify la
+    # columna "Fecha Lzto" queda vacía, pero como el .exe se empaqueta con
+    # --windowed (sin consola) el aviso por `print` no lo ve nadie. `generar`
+    # tiene que devolverlo para que la ventana pueda mostrarlo.
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
+    history.seed_historico(*_seed_vacio())
+    fuente = _fuente_minima(tmp_path)
+
+    _chart_out, _ms_out, aviso = gui.generar(str(fuente), "25")
+
+    assert aviso is not None
+    assert "Spotify" in aviso

@@ -19,7 +19,11 @@ pip install pyinstaller >nul 2>&1
 
 echo.
 echo Generando el ejecutable...
-pyinstaller --onefile --windowed --name ReportesSpotifyLatam --distpath . --workpath build_pyinstaller --specpath build_pyinstaller run_gui.py
+rem --hidden-import: spotipy y dotenv se importan de forma "perezosa" (dentro
+rem de una funcion / en un try), y PyInstaller no siempre los detecta solo.
+rem Sin esto el .exe puede quedar sin la parte de Spotify, y la columna
+rem "Fecha Lzto" saldria siempre vacia.
+pyinstaller --onefile --windowed --name ReportesSpotifyLatam --distpath . --workpath build_pyinstaller --specpath build_pyinstaller --hidden-import spotipy --hidden-import dotenv run_gui.py
 
 echo.
 if exist "ReportesSpotifyLatam.exe" (

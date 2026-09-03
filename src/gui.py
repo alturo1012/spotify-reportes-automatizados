@@ -23,21 +23,27 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
-from . import config
+from . import chart_semanal, config
 from . import main as main_module
 
 
-def generar(fuente_path: str, semana: str) -> tuple[Path, Path]:
+def generar(fuente_path: str, semana: str):
     """Corre el mismo proceso que `main.py` (carga la fuente, guarda la
     semana en el histórico si hace falta, genera los dos reportes) y
     devuelve las rutas de los reportes generados, para que la GUI pueda
     mostrarlas. Separado de la clase `App` para poder probarlo con pytest
     sin necesitar una pantalla (tkinter no se importa en los tests).
+
+    Devuelve (chart_out, ms_out, aviso). `aviso` es None si todo salió
+    bien, o el motivo por el que no se pudieron resolver las fechas de
+    lanzamiento vía Spotify. Existe porque el .exe se empaqueta con
+    --windowed (sin consola): ese aviso se imprime con `print` y ahí no lo
+    ve nadie, así que la ventana lo tiene que mostrar en el mensaje final.
     """
     main_module.main(["--fuente", fuente_path, "--semana", semana])
     chart_out = config.OUTPUT_DIR / f"Reporte_Chart_Top_Semanal_Sem_{semana}.xlsx"
     ms_out = config.OUTPUT_DIR / f"Reporte_MS_TOP200_Sem_{semana}.xlsx"
-    return chart_out, ms_out
+    return chart_out, ms_out, chart_semanal.ultimo_aviso_fechas()
 
 
 class App(tk.Tk):
@@ -118,11 +124,11 @@ class App(tk.Tk):
         # método de Tkinter directamente (ver nota en __init__): solo deja
         # el resultado en la cola.
         try:
-            chart_out, ms_out = generar(fuente, semana)
+            chart_out, ms_out, aviso = generar(fuente, semana)
         except (SystemExit, Exception) as e:  # noqa: BLE001 -- se la mostramos tal cual al usuario
             self._resultado_queue.put(("error", str(e)))
         else:
-            self._resultado_queue.put(("exito", (chart_out, ms_out)))
+            self._resultado_queue.put(("exito", (chart_out, ms_out, aviso)))
 
     def _revisar_resultado(self) -> None:
         try:
@@ -136,14 +142,20 @@ class App(tk.Tk):
         else:
             self._error(dato)
 
-    def _exito(self, chart_out: Path, ms_out: Path) -> None:
+    def _exito(self, chart_out: Path, ms_out: Path, aviso: str = None) -> None:
         self.boton_generar.config(state="normal")
-        self.estado_var.set(f"Listo. Reportes guardados en: {chart_out.parent}")
-        messagebox.showinfo(
-            "Reportes generados",
+        texto = (
             f"Se generaron los dos reportes en:\n\n{chart_out.parent}\n\n"
-            f"- {chart_out.name}\n- {ms_out.name}",
+            f"- {chart_out.name}\n- {ms_out.name}"
         )
+        if aviso:
+            # Sin consola (--windowed) este es el único lugar donde el
+            # usuario puede enterarse de que algo quedó a medias.
+            self.estado_var.set("Listo, pero con un aviso. Revisa el mensaje.")
+            messagebox.showwarning("Reportes generados (con un aviso)", f"{texto}\n\n⚠ {aviso}")
+            return
+        self.estado_var.set(f"Listo. Reportes guardados en: {chart_out.parent}")
+        messagebox.showinfo("Reportes generados", texto)
 
     def _error(self, mensaje: str) -> None:
         self.boton_generar.config(state="normal")

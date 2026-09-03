@@ -97,3 +97,47 @@ def test_spotify_release_date_client_sin_credenciales_lanza_error(tmp_path, monk
     monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
     with pytest.raises(RuntimeError):
         spotify_release_dates.SpotifyReleaseDateClient()
+
+
+def test_isrc_no_encontrado_queda_cacheado_y_la_corrida_siguiente_no_revienta(tmp_path):
+    # REGRESIÓN del bug real que rompía el .exe: cuando Spotify no encuentra
+    # un ISRC, se cachea con track_id NULL. En la corrida SIGUIENTE, pandas
+    # lee ese NULL como NaN (float) y el `sorted(...)` de los track_ids
+    # reventaba con "'<' not supported between instances of 'float' and
+    # 'str'" -- o sea, la primera corrida "envenenaba" la caché y todas las
+    # siguientes fallaban, dejando la columna vacía para siempre.
+    cliente = ClienteFalso(
+        id_por_isrc={"ISRC_SI": "trackX", "ISRC_NO": None},
+        fecha_por_id={"trackX": "2021-07-07"},
+    )
+    isrcs = pd.Series(["ISRC_SI", "ISRC_NO"])
+
+    primera = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente)
+    assert list(primera) == ["2021-07-07", None]
+
+    # Segunda corrida: ahora todo sale de la caché (incluido el "no
+    # encontrado"), que es justo donde antes explotaba.
+    cliente_que_no_debe_usarse = ClienteFalso(id_por_isrc={}, fecha_por_id={})
+    segunda = spotify_release_dates.resolver_fechas_lanzamiento(
+        isrcs, cliente=cliente_que_no_debe_usarse,
+    )
+    assert list(segunda) == ["2021-07-07", None]
+    # Y no se vuelve a gastar una llamada a la API por el ISRC no encontrado.
+    assert cliente_que_no_debe_usarse.llamadas_busqueda == []
+
+
+def test_isrc_con_espacios_o_numericos_no_rompe_el_orden(tmp_path):
+    # La columna ISRC puede venir con tipos mezclados según la semana
+    # (texto, celdas vacías, algún número) -- pandas la deja como `object` y
+    # mezclar float con str rompía el sorted(...). Deben normalizarse.
+    cliente = ClienteFalso(
+        id_por_isrc={"ISRC_A": "trackA"}, fecha_por_id={"trackA": "2019-09-09"},
+    )
+    isrcs = pd.Series(["  ISRC_A  ", 12345, None, "", float("nan")])
+
+    fechas = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente)
+
+    assert fechas.iloc[0] == "2019-09-09"  # se limpia y encuentra igual
+    assert fechas.iloc[2] is None and fechas.iloc[3] is None and fechas.iloc[4] is None
+    # El valor numérico se consulta como texto, sin romper nada.
+    assert "12345" in cliente.llamadas_busqueda

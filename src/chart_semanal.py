@@ -195,6 +195,22 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     return listado.head(config.TOP_N_LISTADO_CANCIONES).reset_index(drop=True)
 
 
+# Motivo por el que la última corrida no pudo resolver fechas de
+# lanzamiento (None si salió bien o si todavía no se intentó). Existe porque
+# el .exe se empaqueta con --windowed, es decir SIN consola: el `print(...)`
+# del aviso no lo ve nadie cuando se usa la app empaquetada. La GUI lee esto
+# después de generar para poder mostrarlo en el mensaje final (ver
+# gui.generar / App._exito). Bug real: el usuario generó un reporte con el
+# .exe, la columna salió vacía, y no tenía forma de saber por qué.
+_ULTIMO_AVISO_FECHAS = None
+
+
+def ultimo_aviso_fechas():
+    """Devuelve el motivo del último fallo al resolver fechas de lanzamiento
+    (o None si la última corrida salió bien)."""
+    return _ULTIMO_AVISO_FECHAS
+
+
 def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFrame:
     """Agrega la columna "fecha_lanzamiento" al listado de canciones,
     resuelta vía Spotify a partir de "isrc" (ver
@@ -206,6 +222,9 @@ def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFra
     falla, la columna queda en blanco para esta corrida y se vuelve a
     intentar la próxima vez (la caché ya resuelta no se pierde).
     """
+    global _ULTIMO_AVISO_FECHAS
+    _ULTIMO_AVISO_FECHAS = None
+
     listado = listado.copy()
     if listado.empty or "isrc" not in listado.columns:
         listado["fecha_lanzamiento"] = None
@@ -215,10 +234,12 @@ def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFra
             listado["isrc"], cliente=cliente
         )
     except Exception as e:
-        print(
-            f"Aviso: no se pudieron resolver fechas de lanzamiento vía Spotify ({e}). "
-            "El reporte se genera igual, sin esa columna llena por ahora."
+        _ULTIMO_AVISO_FECHAS = (
+            f"No se pudieron resolver las fechas de lanzamiento vía Spotify ({e}). "
+            "El reporte se generó igual, con esa columna vacía; se vuelve a intentar "
+            "en la próxima corrida."
         )
+        print(f"Aviso: {_ULTIMO_AVISO_FECHAS}")
         listado["fecha_lanzamiento"] = None
     return listado
 
@@ -326,11 +347,12 @@ def _escribir_resumen_total(
     celda_semana.font = negrita_centrada
 
     # Columna A ("año" en la serie histórica, y "Artist/Título" en el
-    # listado de canciones de más abajo) más ancha de lo que necesita un año
-    # solo, para que los títulos largos tengan más espacio antes de
-    # desbordar visualmente hacia la columna B (que queda vacía en esas
-    # filas).
-    ws.column_dimensions[get_column_letter(_COL_ANIO)].width = 22
+    # listado de canciones de más abajo) mucho más ancha de lo que necesita
+    # un año solo, porque tiene que alcanzar para los títulos largos: desde
+    # que la fecha de lanzamiento se movió a la columna B (a pedido del
+    # usuario, ver _escribir_listado_canciones), los títulos ya no pueden
+    # desbordar visualmente hacia B como antes.
+    ws.column_dimensions[get_column_letter(_COL_ANIO)].width = 32
     ws.column_dimensions[get_column_letter(_COL_MES)].width = 12
     ws.column_dimensions[get_column_letter(_COL_SEMANA)].width = 10
     ws.column_dimensions[get_column_letter(_COL_SEPARADOR_INICIAL)].width = 2
@@ -411,10 +433,25 @@ def _escribir_listado_canciones(
     celda_cancion = ws.cell(row=fila_header_pais, column=_COL_ANIO, value="Artist/Título")
     ws.merge_cells(
         start_row=fila_header_pais, start_column=_COL_ANIO,
-        end_row=fila_header_banda, end_column=_COL_MES,
+        end_row=fila_header_banda, end_column=_COL_ANIO,
     )
     celda_cancion.alignment = centrado
     celda_cancion.font = negrita
+
+    # Fecha de lanzamiento (vía Spotify, ver agregar_fecha_lanzamiento) al
+    # lado del nombre de la canción, antes de "Región" -- así lo pidió el
+    # usuario mostrando la plantilla real (antes estaba al final, después de
+    # "Suma Posiciones"). Va en _COL_MES (columna B), que en las filas del
+    # listado está libre: así NO se corren los bloques de país, que tienen
+    # que seguir alineados con los de la serie histórica de arriba (ambos
+    # usan las mismas columnas, ver _escribir_bloques_pais).
+    celda_fecha_lanz = ws.cell(row=fila_header_pais, column=_COL_MES, value="Fecha Lzto")
+    ws.merge_cells(
+        start_row=fila_header_pais, start_column=_COL_MES,
+        end_row=fila_header_banda, end_column=_COL_MES,
+    )
+    celda_fecha_lanz.alignment = centrado
+    celda_fecha_lanz.font = negrita
 
     celda_region = ws.cell(row=fila_header_pais, column=_COL_SEMANA, value="Región")
     ws.merge_cells(
@@ -452,24 +489,15 @@ def _escribir_listado_canciones(
     celda_suma.font = negrita
     ws.column_dimensions[get_column_letter(col_suma)].width = 9
 
-    # Fecha de lanzamiento (vía Spotify, ver agregar_fecha_lanzamiento) --
-    # se agrega como tercera columna sin nombre al final, mismo patrón que
-    # "N° Países"/"Suma Posiciones". Ubicación decidida por Claude (no
-    # especificada por el usuario más allá de que fuera parte del listado);
-    # avisar si se prefiere en otra posición (ej. junto a "Región").
-    col_fecha = columna_siguiente_libre + 2
-    celda_fecha = ws.cell(row=fila_header_pais, column=col_fecha, value="Fecha de Lanzamiento")
-    ws.merge_cells(
-        start_row=fila_header_pais, start_column=col_fecha,
-        end_row=fila_header_banda, end_column=col_fecha,
-    )
-    celda_fecha.alignment = centrado
-    celda_fecha.font = negrita
-    ws.column_dimensions[get_column_letter(col_fecha)].width = 16
-
     for i, fila in enumerate(listado.itertuples(index=False)):
         r = fila_primer_dato + i
         ws.cell(row=r, column=_COL_ANIO, value=fila.cancion)
+        fecha_lanzamiento = getattr(fila, "fecha_lanzamiento", None)
+        if pd.notna(fecha_lanzamiento):
+            # Texto, no fecha de Excel a propósito -- Spotify a veces solo
+            # trae año o año-mes (release_date_precision), forzar un
+            # number_format de fecha rompería esos casos parciales.
+            ws.cell(row=r, column=_COL_MES, value=str(fecha_lanzamiento))
         ws.cell(row=r, column=_COL_SEMANA, value=fila.region)
 
         for pais in config.ORDEN_PAISES_CHART:
@@ -482,12 +510,6 @@ def _escribir_listado_canciones(
 
         ws.cell(row=r, column=col_paises, value=int(fila.paises_presente))
         ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))
-        fecha_lanzamiento = getattr(fila, "fecha_lanzamiento", None)
-        if pd.notna(fecha_lanzamiento):
-            # Texto, no fecha de Excel a propósito -- Spotify a veces solo
-            # trae año o año-mes (release_date_precision), forzar un
-            # number_format de fecha rompería esos casos parciales.
-            ws.cell(row=r, column=col_fecha, value=str(fecha_lanzamiento))
 
 
 # Layout de "Detalle Tracks": posición (1-200) fija a la izquierda y un

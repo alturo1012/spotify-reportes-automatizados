@@ -494,11 +494,15 @@ def test_listado_canciones_incluye_fecha_de_lanzamiento_con_cliente_de_prueba(tm
     wb = openpyxl.load_workbook(salida)
     ws = wb[config.CHART_SHEET_RESUMEN]
 
-    # Mismo layout que test_resumen_total_incluye_el_listado_de_canciones...:
-    # col_paises=107, col_suma=108 (17 países x 6 columnas empezando en la 5) -> Fecha de Lanzamiento en la 109.
-    col_fecha = 109
-    assert ws.cell(row=11, column=col_fecha).value == "Fecha de Lanzamiento"
-    assert ws.cell(row=13, column=col_fecha).value == "2020-03-15"
+    # La fecha va en la columna B (_COL_MES), entre "Artist/Título" (A) y
+    # "Región" (C) -- así lo pidió el usuario mostrando la plantilla real.
+    # Importante: no debe correr los bloques de país (siguen empezando en la
+    # columna 5, alineados con la serie histórica de arriba).
+    assert ws.cell(row=11, column=2).value == "Fecha Lzto"
+    assert ws.cell(row=13, column=2).value == "2020-03-15"
+    assert ws.cell(row=11, column=1).value == "Artist/Título"
+    assert ws.cell(row=11, column=3).value == "Región"
+    assert ws.cell(row=13, column=3).value == "Latin"
 
 
 def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypatch):
@@ -526,5 +530,5 @@ def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypa
 
     wb = openpyxl.load_workbook(salida)
     ws = wb[config.CHART_SHEET_RESUMEN]
-    assert ws.cell(row=11, column=109).value == "Fecha de Lanzamiento"
-    assert ws.cell(row=13, column=109).value is None
+    assert ws.cell(row=11, column=2).value == "Fecha Lzto"
+    assert ws.cell(row=13, column=2).value is None
