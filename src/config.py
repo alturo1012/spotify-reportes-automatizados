@@ -82,6 +82,41 @@ NOMBRE_PAIS_CHART = {
     "PT": "PORTUGAL",
 }
 
+# Orden real de los bloques de país en la pestaña resumen "% Market Share"
+# del Reporte_MS_TOP200 -- verificado 1:1 contra PLANTILLA_SEMANAL_MS_TOP200.xlsx
+# (fila 4, encabezados de bloque). Es un orden DISTINTO al de PAISES_MS (que
+# sigue siendo el correcto para el orden de las pestañas por país -- verificado
+# también contra los nombres de pestaña reales del mismo archivo) -- no es un
+# error, la plantilla usa un orden distinto para esta pestaña resumen en
+# particular (ej. Dominicana aparece en la posición 4, no la 10).
+ORDEN_PAISES_MS_RESUMEN = [
+    "CO", "PE", "EC", "DO", "CR", "GT", "PN", "SV", "HN", "NI",
+    "AR", "CL", "BR", "MX", "SP", "PT", "VE",
+]
+
+# Nombre de país tal cual aparece en los encabezados de bloque de esa misma
+# pestaña resumen -- verificado 1:1 contra el archivo real. OJO: "EL
+# SALVADOR" acá (con "EL"), a diferencia de NOMBRE_PAIS_CHART que usa
+# "SALVADOR" solo -- cada reporte usa el nombre tal cual viene en su propia
+# plantilla real, no se unificaron a propósito.
+NOMBRE_PAIS_MS_RESUMEN = {
+    "CO": "COLOMBIA", "PE": "PERU", "EC": "ECUADOR", "DO": "DOMINICANA",
+    "CR": "COSTA RICA", "GT": "GUATEMALA", "PN": "PANAMA", "SV": "EL SALVADOR",
+    "HN": "HONDURAS", "NI": "NICARAGUA", "AR": "ARGENTINA", "CL": "CHILE",
+    "BR": "BRASIL", "MX": "MEXICO", "SP": "ESPAÑA", "PT": "PORTUGAL",
+    "VE": "VENEZUELA",
+}
+
+# Orden de sellos en las tablas de bloque de esa misma pestaña resumen --
+# verificado 1:1 contra el archivo real (filas 7-13 de cada bloque). Es
+# DISTINTO del orden de LABEL_GROUPS_MS (que sigue siendo el correcto para
+# las filas 106-112 de cada pestaña de país individual, verificado también
+# contra el archivo real) -- la plantilla real usa dos órdenes de sello
+# distintos en dos lugares distintos, no es un error de transcripción.
+ORDEN_LABELS_MS_RESUMEN = [
+    "Universal", "Sony", "INgrooves", "Orchard", "Warner", "Indies", "Virgin",
+]
+
 # Mapeo país (nombre completo, tal cual llega en la columna "country" de la
 # fuente BQ) -> código de 2 letras usado en las pestañas de los reportes.
 # Confirmado contra los 17 países reales de PLANTILLA_SEMANAL_MS_TOP200.xlsx
@@ -146,8 +181,10 @@ def normalizar_label_group(valor: str) -> str:
 BANDAS_CHART = [10, 30, 50, 100, 200]
 
 # Bandas usadas en PLANTILLA_SEMANAL_MS_TOP200.xlsx (filas "Tracks TOP N" /
-# "Streams TOP N"). Hoy solo se usa la de 200 para el % Market Share, pero se
-# deja la lista completa por si se necesitan las otras bandas más adelante.
+# "Streams TOP N" / "Streams (%) TOP N"). El resumen "% Market Share" (fila
+# 99-112, ver calcular_ytd_por_pais) solo usa la de 200; las 5 se usan en la
+# cuadrícula semanal de las pestañas individuales por país (ver
+# market_share._escribir_pagina_pais).
 BANDAS_MARKET_SHARE = [10, 20, 50, 100, 200]
 
 # Nombres de mes en español, tal cual aparecen en la columna "mes" del
@@ -171,6 +208,24 @@ MESES_ES_ABREV = {
     9: "sep", 10: "oct", 11: "nov", 12: "dic",
 }
 
+# Semáforo de participación de Universal en la serie histórica de "Resumen
+# Total" (color de fondo de cada celda conteo_universal, según qué tan cerca
+# está del objetivo de participación de Universal en esa banda). Confirmado
+# con el usuario con el ejemplo de banda=10 (objetivo = 3 canciones, 30% de
+# 10): 1-2 canciones -> rojo, 3 -> amarillo, 4-10 -> verde. El mismo
+# porcentaje aplicado a las demás bandas (30/50/100/200) da exactamente
+# 9/15/30/60 -- los mismos números que traía la leyenda de la plantilla
+# original (fila 1-2) que antes no se había podido explicar; confirma que
+# el criterio se generaliza igual a todas las bandas.
+PCT_OBJETIVO_UNIVERSAL = 0.30
+
+# Colores estándar de "Reglas de resaltado de celdas" de Excel (rojo/
+# amarillo/verde suaves), para que el semáforo se vea como el de cualquier
+# reporte de Excel normal.
+COLOR_SEMAFORO_ROJO = "FFC7CE"
+COLOR_SEMAFORO_AMARILLO = "FFEB9C"
+COLOR_SEMAFORO_VERDE = "C6EFCE"
+
 # Cuántas canciones como máximo se listan en el "listado de canciones" de
 # "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con
 # todas las canciones de una semana (pueden ser 1000+) la hoja queda
@@ -181,3 +236,11 @@ TOP_N_LISTADO_CANCIONES = 200
 CHART_SHEET_RESUMEN = "Resumen Total"
 CHART_SHEET_DETALLE = "Detalle Tracks"
 MS_SHEET_PORCENTAJE = "% Market Share"
+
+# Colores de los banners (título "TOP 200 WEEKLY MARKET SHARE" y encabezado
+# de cada bloque de país) de la pestaña resumen "% Market Share" -- azul
+# marino con texto blanco, el mismo estilo visual de PLANTILLA_SEMANAL_MS_TOP200.xlsx
+# (esa plantilla usa un color de tema de Excel que no se pudo leer 1:1 vía
+# openpyxl -- se usó un azul marino estándar equivalente).
+COLOR_BANNER_MS_FONDO = "1F3864"
+COLOR_BANNER_MS_TEXTO = "FFFFFF"

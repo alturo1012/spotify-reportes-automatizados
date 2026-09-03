@@ -60,6 +60,20 @@ def test_main_genera_los_dos_reportes(tmp_path):
     assert len(ms_df) > 0  # la semana quedó guardada en el histórico
 
 
+def test_main_guarda_el_detalle_track_por_track_en_el_historico(tmp_path):
+    # Desde el ajuste de "empezar a guardar de ahora en adelante": cada
+    # corrida normal de main.py debe dejar el detalle track por track en
+    # chart_track_weekly, no solo los conteos agregados.
+    history.seed_historico(*_seed_vacio())
+    fuente = _fuente_minima(tmp_path)
+
+    main.main(["--fuente", str(fuente), "--semana", "25"])
+
+    tracks_df = history.cargar_chart_track_weekly()
+    assert len(tracks_df) == 3  # 2 tracks CO + 1 track PE en _fuente_minima
+    assert set(tracks_df["country_code"]) == {"CO", "PE"}
+
+
 def test_main_corrido_dos_veces_con_la_misma_fuente_no_duplica_la_semana(tmp_path):
     # Regresión de un problema real que se anticipó en el plan (Paso 5):
     # _proxima_semana() siempre calcula "la siguiente", así que sin este
@@ -74,8 +88,11 @@ def test_main_corrido_dos_veces_con_la_misma_fuente_no_duplica_la_semana(tmp_pat
 
     ms_df = history.cargar_ms_label_weekly()
     chart_df = history.cargar_chart_band_weekly()
+    tracks_df = history.cargar_chart_track_weekly()
     assert ms_df["semana"].max() == 1
     assert chart_df["semana"].max() == 1
+    assert tracks_df["semana"].max() == 1
+    assert len(tracks_df) == 3  # tampoco se duplicó el detalle track por track
 
 
 def test_main_falla_con_mensaje_claro_si_no_existe_el_archivo(tmp_path):

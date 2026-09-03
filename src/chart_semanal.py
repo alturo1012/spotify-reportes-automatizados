@@ -12,16 +12,31 @@ aproximación automatizable, pero no hay garantía matemática de que coincida
 100% con el criterio manual — validar contra la primera semana real de uso
 antes de confiar en el número (Paso 6 del plan).
 
-"Detalle Tracks" NO lleva histórico acumulado a propósito (decisión
-confirmada con el usuario): cada reporte muestra el detalle de la semana que
-se acaba de cargar, no una serie histórica.
+"Detalle Tracks" y el listado de canciones de "Resumen Total" siguen
+mostrando SOLO la semana que se acaba de cargar, no una serie histórica
+(decisión confirmada con el usuario) -- pero desde este cambio, el detalle
+track por track de cada semana sí se GUARDA aparte en
+`history.chart_track_weekly` (vía `history.append_semana_tracks`), para no
+perderlo cuando se cargue la semana siguiente. Es guardado "hacia adelante"
+nada más: no tiene sembrado retroactivo de semanas anteriores a este cambio
+(ver la nota sobre "backfill" en claude/plan_fusion_paso_a_paso.md).
 """
 from pathlib import Path
 import pandas as pd
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from . import config, history
+from . import config, history, spotify_release_dates
+
+_RELLENO_ROJO = PatternFill(
+    start_color=config.COLOR_SEMAFORO_ROJO, end_color=config.COLOR_SEMAFORO_ROJO, fill_type="solid"
+)
+_RELLENO_AMARILLO = PatternFill(
+    start_color=config.COLOR_SEMAFORO_AMARILLO, end_color=config.COLOR_SEMAFORO_AMARILLO, fill_type="solid"
+)
+_RELLENO_VERDE = PatternFill(
+    start_color=config.COLOR_SEMAFORO_VERDE, end_color=config.COLOR_SEMAFORO_VERDE, fill_type="solid"
+)
 
 # Layout de la pestaña "Resumen Total", replicando el formato visual de la
 # plantilla original (PLANTILLA_SEMANAL_ChartTop.xlsm / Reporte_Chart_Top
@@ -40,10 +55,14 @@ from . import config, history
 #     pero en vez de un conteo, la posición real de cada canción en el país
 #     donde aparece (ver _escribir_listado_canciones).
 # NOTA: la plantilla original también trae una fila 1-2 con una leyenda
-# "TOP 10/30/50/100/200" y unos valores de referencia (3/9/15/30/60) que no
-# se pudieron confirmar de dónde salen (no son datos calculados) -- se dejó
-# fuera de este primer ajuste de formato a propósito; se puede agregar
-# después si hace falta.
+# "TOP 10/30/50/100/200" y unos valores de referencia (3/9/15/30/60) que en
+# su momento no se pudieron confirmar de dónde salían -- ya se explicaron:
+# son el objetivo de participación de Universal (30% de cada banda, ver
+# config.PCT_OBJETIVO_UNIVERSAL y _color_semaforo) redondeado a entero
+# (10/30/50/100/200 x 30% = 3/9/15/30/60 exacto). Esa leyenda en sí (las dos
+# filas fijas arriba de todo) sigue sin replicarse -- se puede agregar si
+# hace falta, ahora que se sabe qué representa.
+
 _COL_ANIO = 1
 _COL_MES = 2
 _COL_SEMANA = 3
@@ -115,8 +134,9 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     - Una columna por país donde esa canción aparece, con el número de
       posición real puesto bajo la banda (10/30/50/100/200) a la que
       pertenece esa posición (una sola celda no vacía por país, no las 5).
-      No lleva la fecha de lanzamiento -- no está disponible en la fuente
-      BQ (pendiente de una futura integración con la API de Spotify).
+    - "isrc": ISRC de esa canción (primer valor visto, igual criterio que
+      "region"). Uso interno -- no se escribe tal cual en el Excel, sirve
+      para resolver "fecha_lanzamiento" (ver agregar_fecha_lanzamiento).
     - "paises_presente": en cuántos países aparece.
     - "suma_posiciones": suma de sus posiciones en todos esos países.
 
@@ -130,16 +150,18 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     defecto) de ese orden -- pedido explícito del usuario, para no listar
     las 1000+ canciones que puede traer una semana completa.
     """
-    columnas_vacio = ["cancion", "region", "paises_presente", "suma_posiciones"]
+    columnas_vacio = ["cancion", "region", "isrc", "paises_presente", "suma_posiciones"]
     if df_semana.empty:
         return pd.DataFrame(columns=columnas_vacio)
 
     df = df_semana.copy()
     if "region" not in df.columns:
-        # Defensivo: "region" viene de la fuente BQ real (config.SOURCE_COLUMNS),
-        # pero no todo caller de prueba la incluye -- que falte no debe
-        # tumbar el reporte, solo queda esa columna en blanco.
+        # Defensivo: "region"/"ISRC" vienen de la fuente BQ real
+        # (config.SOURCE_COLUMNS), pero no todo caller de prueba las incluye
+        # -- que falten no debe tumbar el reporte, solo quedan en blanco.
         df["region"] = None
+    if "ISRC" not in df.columns:
+        df["ISRC"] = None
     df["cancion"] = (
         df["song_name"].astype(str).str.strip() + " / " + df["artist"].astype(str).str.strip()
     )
@@ -151,6 +173,7 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
 
     resumen_cancion = df.groupby("cancion").agg(
         region=("region", "first"),
+        isrc=("ISRC", "first"),
         paises_presente=("country_code", "nunique"),
         suma_posiciones=("position", "sum"),
     )
@@ -170,6 +193,59 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     # pedido explícito del usuario, para no listar las 1000+ canciones de
     # una semana completa.
     return listado.head(config.TOP_N_LISTADO_CANCIONES).reset_index(drop=True)
+
+
+def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFrame:
+    """Agrega la columna "fecha_lanzamiento" al listado de canciones,
+    resuelta vía Spotify a partir de "isrc" (ver
+    spotify_release_dates.resolver_fechas_lanzamiento).
+
+    A propósito NO deja que un problema con la API de Spotify (sin
+    credenciales configuradas, sin internet, rate limit agotado, ISRC no
+    encontrado, etc.) tumbe la generación del reporte completo: si algo
+    falla, la columna queda en blanco para esta corrida y se vuelve a
+    intentar la próxima vez (la caché ya resuelta no se pierde).
+    """
+    listado = listado.copy()
+    if listado.empty or "isrc" not in listado.columns:
+        listado["fecha_lanzamiento"] = None
+        return listado
+    try:
+        listado["fecha_lanzamiento"] = spotify_release_dates.resolver_fechas_lanzamiento(
+            listado["isrc"], cliente=cliente
+        )
+    except Exception as e:
+        print(
+            f"Aviso: no se pudieron resolver fechas de lanzamiento vía Spotify ({e}). "
+            "El reporte se genera igual, sin esa columna llena por ahora."
+        )
+        listado["fecha_lanzamiento"] = None
+    return listado
+
+
+def _color_semaforo(banda: int, conteo):
+    """Semáforo de participación de Universal para una celda conteo_universal
+    de la serie histórica (banda/país/semana): el objetivo es que Universal
+    tenga config.PCT_OBJETIVO_UNIVERSAL (30%) de los tracks de esa banda.
+
+    - Rojo: por debajo del objetivo (incluye 0 -- el usuario dio el ejemplo
+      con 1-2 canciones para banda=10, no mencionó el caso de 0, se trata
+      igual de rojo por estar aún más lejos del objetivo. Avisar si no es
+      lo esperado).
+    - Amarillo: exactamente en el objetivo (3 de 10, 9 de 30, 15 de 50, 30
+      de 100, 60 de 200).
+    - Verde: por encima del objetivo.
+
+    None (sin color) si no hay dato (celda vacía / NaN).
+    """
+    if conteo is None or (isinstance(conteo, float) and pd.isna(conteo)):
+        return None
+    objetivo = round(banda * config.PCT_OBJETIVO_UNIVERSAL)
+    if conteo < objetivo:
+        return _RELLENO_ROJO
+    if conteo == objetivo:
+        return _RELLENO_AMARILLO
+    return _RELLENO_VERDE
 
 
 def _escribir_bloques_pais(ws, fila_header_pais: int, fila_header_banda: int, aplicar_anchos: bool):
@@ -222,7 +298,9 @@ def _escribir_bloques_pais(ws, fila_header_pais: int, fila_header_banda: int, ap
     return columna_inicio_por_pais, columna_actual
 
 
-def _escribir_resumen_total(writer: pd.ExcelWriter, resumen: pd.DataFrame, df_semana: pd.DataFrame) -> None:
+def _escribir_resumen_total(
+    writer: pd.ExcelWriter, resumen: pd.DataFrame, df_semana: pd.DataFrame, cliente_spotify=None,
+) -> None:
     """Escribe la pestaña "Resumen Total": arriba la serie histórica
     completa con el formato de la plantilla original (encabezados
     combinados, columnas angostas, freeze_panes), y debajo -- después de un
@@ -280,32 +358,43 @@ def _escribir_resumen_total(writer: pd.ExcelWriter, resumen: pd.DataFrame, df_se
             for i_banda, banda in enumerate(config.BANDAS_CHART):
                 nombre_columna = f"{pais}_top{banda}"
                 valor = getattr(fila, nombre_columna, None)
-                ws.cell(row=r, column=col_inicio + i_banda, value=valor)
+                celda = ws.cell(row=r, column=col_inicio + i_banda, value=valor)
+                relleno = _color_semaforo(banda, valor)
+                if relleno is not None:
+                    celda.fill = relleno
 
     ws.freeze_panes = f"{get_column_letter(_COL_PRIMER_PAIS)}{_FILA_PRIMER_DATO}"
 
     ultima_fila_historica = _FILA_PRIMER_DATO + max(len(resumen) - 1, 0)
     fila_listado = ultima_fila_historica + _FILAS_ANTES_DE_LISTADO + 1
     _escribir_listado_canciones(
-        ws, df_semana, fila_listado, columna_inicio_por_pais, columna_siguiente_libre
+        ws, df_semana, fila_listado, columna_inicio_por_pais, columna_siguiente_libre,
+        cliente_spotify=cliente_spotify,
     )
 
 
 def _escribir_listado_canciones(
     ws, df_semana: pd.DataFrame, fila_inicio: int,
     columna_inicio_por_pais: dict, columna_siguiente_libre: int,
+    cliente_spotify=None,
 ) -> None:
     """Escribe el bloque "listado de canciones" de la semana actual, debajo
     de la serie histórica en la misma pestaña "Resumen Total" (ver
     construir_listado_canciones para el detalle de qué contiene cada fila).
     No lleva histórico: se reescribe por completo cada vez que se genera el
     reporte, con la semana que se acaba de cargar.
+
+    `cliente_spotify` es opcional -- se pasa tal cual a
+    agregar_fecha_lanzamiento (ver ahí): None usa la API real de Spotify
+    (con degradación segura si no hay credenciales o falla), o se puede
+    inyectar un doble de prueba.
     """
     if df_semana.empty:
         return
     listado = construir_listado_canciones(df_semana)
     if listado.empty:
         return
+    listado = agregar_fecha_lanzamiento(listado, cliente=cliente_spotify)
 
     negrita = Font(bold=True)
     centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -363,6 +452,21 @@ def _escribir_listado_canciones(
     celda_suma.font = negrita
     ws.column_dimensions[get_column_letter(col_suma)].width = 9
 
+    # Fecha de lanzamiento (vía Spotify, ver agregar_fecha_lanzamiento) --
+    # se agrega como tercera columna sin nombre al final, mismo patrón que
+    # "N° Países"/"Suma Posiciones". Ubicación decidida por Claude (no
+    # especificada por el usuario más allá de que fuera parte del listado);
+    # avisar si se prefiere en otra posición (ej. junto a "Región").
+    col_fecha = columna_siguiente_libre + 2
+    celda_fecha = ws.cell(row=fila_header_pais, column=col_fecha, value="Fecha de Lanzamiento")
+    ws.merge_cells(
+        start_row=fila_header_pais, start_column=col_fecha,
+        end_row=fila_header_banda, end_column=col_fecha,
+    )
+    celda_fecha.alignment = centrado
+    celda_fecha.font = negrita
+    ws.column_dimensions[get_column_letter(col_fecha)].width = 16
+
     for i, fila in enumerate(listado.itertuples(index=False)):
         r = fila_primer_dato + i
         ws.cell(row=r, column=_COL_ANIO, value=fila.cancion)
@@ -378,37 +482,130 @@ def _escribir_listado_canciones(
 
         ws.cell(row=r, column=col_paises, value=int(fila.paises_presente))
         ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))
+        fecha_lanzamiento = getattr(fila, "fecha_lanzamiento", None)
+        if pd.notna(fecha_lanzamiento):
+            # Texto, no fecha de Excel a propósito -- Spotify a veces solo
+            # trae año o año-mes (release_date_precision), forzar un
+            # number_format de fecha rompería esos casos parciales.
+            ws.cell(row=r, column=col_fecha, value=str(fecha_lanzamiento))
+
+
+# Layout de "Detalle Tracks": posición (1-200) fija a la izquierda y un
+# país por columna, con la canción que ocupa esa posición en ese país esa
+# semana ("Título / Artista", igual que el listado de canciones de "Resumen
+# Total"). Fila de título (semana/fecha) y fila de encabezado de país fijas
+# arriba con freeze_panes -- igual idea que "Resumen Total", pero sin las
+# bandas 10/30/50/100/200 (acá cada país es una sola columna, no un bloque)
+# y sin color todavía (el usuario no tiene definido qué deberían significar
+# los colores de esta pestaña, se deja para más adelante).
+_DETALLE_COL_POSICION = 1
+_DETALLE_COL_PRIMER_PAIS = 2
+_DETALLE_FILA_TITULO = 1
+_DETALLE_FILA_HEADER_PAIS = 2
+_DETALLE_FILA_PRIMER_DATO = 3
 
 
 def construir_detalle_tracks(df_semana: pd.DataFrame) -> pd.DataFrame:
-    """Detalle track por track (posición 1-200) de la semana que se acaba
-    de cargar, por país. Sin histórico — ver advertencia del módulo.
+    """Detalle track por track de la semana que se acaba de cargar: una fila
+    por posición (1-200), una columna por país (config.ORDEN_PAISES_CHART),
+    con el texto "Título / Artista" de la canción que ocupa esa posición en
+    ese país. Sin histórico — ver advertencia del módulo.
+
+    Antes esta función devolvía una tabla larga (una fila por país+posición,
+    con columnas country_code/chart_date/position/artist/song_name/
+    stream_count/label_group/label_name); se cambió a esta tabla ancha para
+    que la pestaña se vea como la plantilla original -- OJO, con el cambio
+    se dejan de mostrar stream_count/label_group/label_name (no se pidieron
+    para este formato); avisar si hacen falta en otro lado.
     """
-    columnas = [
-        "country_code", "chart_date", "position", "artist", "song_name",
-        "stream_count", "label_group", "label_name",
-    ]
-    return df_semana[columnas].sort_values(["country_code", "position"])
+    if df_semana.empty:
+        return pd.DataFrame(columns=["position"])
+
+    df = df_semana.copy()
+    df["cancion"] = (
+        df["song_name"].astype(str).str.strip() + " / " + df["artist"].astype(str).str.strip()
+    )
+    tabla = df.pivot_table(index="position", columns="country_code", values="cancion", aggfunc="first")
+    columnas_ordenadas = [pais for pais in config.ORDEN_PAISES_CHART if pais in tabla.columns]
+    tabla = tabla[columnas_ordenadas]
+    tabla = tabla.reset_index().sort_values("position").reset_index(drop=True)
+    return tabla
+
+
+def _escribir_detalle_tracks(ws, df_semana: pd.DataFrame, tabla: pd.DataFrame) -> None:
+    """Escribe la pestaña "Detalle Tracks" con el layout de arriba
+    (_DETALLE_COL_*/_DETALLE_FILA_*) -- se crea la hoja aparte con openpyxl
+    en vez de con `.to_excel(...)` para poder fijar (freeze_panes) la
+    columna de posición y la fila de encabezado, igual que en "Resumen
+    Total".
+    """
+    if tabla.empty:
+        return
+
+    negrita = Font(bold=True)
+    centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    fecha = pd.Timestamp(df_semana["chart_date"].iloc[0])
+    texto_titulo = f"Week Ending - {fecha.day:02d} {config.MESES_ES_ABREV[fecha.month]}, {fecha.year}"
+    celda_titulo = ws.cell(row=_DETALLE_FILA_TITULO, column=_DETALLE_COL_POSICION, value=texto_titulo)
+    celda_titulo.font = negrita
+
+    celda_posicion = ws.cell(row=_DETALLE_FILA_HEADER_PAIS, column=_DETALLE_COL_POSICION, value="Position")
+    celda_posicion.font = negrita
+    celda_posicion.alignment = centrado
+    ws.column_dimensions[get_column_letter(_DETALLE_COL_POSICION)].width = 10
+
+    columnas_pais = [c for c in tabla.columns if c != "position"]
+    for i, pais in enumerate(columnas_pais):
+        col = _DETALLE_COL_PRIMER_PAIS + i
+        celda = ws.cell(row=_DETALLE_FILA_HEADER_PAIS, column=col, value=pais)
+        celda.font = negrita
+        celda.alignment = centrado
+        ws.column_dimensions[get_column_letter(col)].width = 24
+
+    for i, fila in enumerate(tabla.itertuples(index=False)):
+        r = _DETALLE_FILA_PRIMER_DATO + i
+        ws.cell(row=r, column=_DETALLE_COL_POSICION, value=int(fila.position))
+        for j, pais in enumerate(columnas_pais):
+            valor = getattr(fila, pais, None)
+            if pd.notna(valor):
+                ws.cell(row=r, column=_DETALLE_COL_PRIMER_PAIS + j, value=valor)
+
+    ws.freeze_panes = f"{get_column_letter(_DETALLE_COL_PRIMER_PAIS)}{_DETALLE_FILA_PRIMER_DATO}"
 
 
 def generar_reporte(
-    df_semana: pd.DataFrame, output_path: Path, guardar_en_historico: bool = True
+    df_semana: pd.DataFrame, output_path: Path, guardar_en_historico: bool = True,
+    cliente_spotify=None,
 ) -> Path:
     """Genera el reporte de Chart Semanal a partir del DataFrame de la
     semana nueva (el que devuelve load_data.load_source). Guarda esa semana
     en el histórico (a menos que ya se haya guardado antes, con
-    guardar_en_historico=False) y arma "Resumen Total" con TODO el
-    histórico acumulado más el listado de canciones de la semana actual, y
-    "Detalle Tracks" solo con la semana actual.
+    guardar_en_historico=False) -- tanto el conteo agregado
+    (`chart_band_weekly`, para "Resumen Total") como el detalle track por
+    track (`chart_track_weekly`, para no perder "Detalle Tracks"/el listado
+    de canciones de esta semana aunque el reporte solo muestre la semana
+    actual) -- y arma "Resumen Total" con TODO el histórico acumulado más el
+    listado de canciones de la semana actual (incluida su columna "Fecha de
+    Lanzamiento", resuelta vía Spotify -- ver agregar_fecha_lanzamiento), y
+    "Detalle Tracks" solo con la semana actual (posición fija x país por
+    columna, ver construir_detalle_tracks / _escribir_detalle_tracks).
+
+    `cliente_spotify` es opcional: por defecto (None) se usa la API real de
+    Spotify (credenciales desde el entorno, con degradación segura si
+    faltan o algo falla -- ver agregar_fecha_lanzamiento). Se puede pasar
+    un doble de prueba para no depender de la red/credenciales reales.
     """
     if guardar_en_historico:
         history.append_semana_chart(df_semana)
+        history.append_semana_tracks(df_semana)
 
     resumen = construir_resumen_total()
     detalle = construir_detalle_tracks(df_semana)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        _escribir_resumen_total(writer, resumen, df_semana)
-        detalle.to_excel(writer, sheet_name=config.CHART_SHEET_DETALLE, index=False)
+        _escribir_resumen_total(writer, resumen, df_semana, cliente_spotify=cliente_spotify)
+        ws_detalle = writer.book.create_sheet(config.CHART_SHEET_DETALLE)
+        _escribir_detalle_tracks(ws_detalle, df_semana, detalle)
 
     return output_path
