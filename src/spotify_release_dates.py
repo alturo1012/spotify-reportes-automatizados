@@ -59,6 +59,40 @@ except ImportError:  # python-dotenv es opcional -- si no está, se sigue
     pass            # confiando en variables de entorno ya exportadas.
 
 
+def _texto_o_none(valor):
+    """Devuelve el valor como texto limpio, o None si no es utilizable
+    (None, NaN, cadena vacía, "nan"/"none" en cualquier combinación).
+
+    BUG REAL que arregla (el .exe generaba el reporte con la columna
+    "Fecha Lzto" vacía y el aviso decía: "'<' not supported between
+    instances of 'float' and 'str'"):
+
+    Cuando Spotify no encuentra un ISRC, se guarda en la caché
+    `spotify_isrc_cache` con `track_id = NULL` -- correcto, así no se
+    vuelve a consultar por él. Pero al leer esa caché de vuelta, pandas
+    convierte ese NULL en `NaN`, que es un **float**. Y `if tid:` NO lo
+    filtra, porque en Python `bool(float("nan"))` es `True`. Ese NaN se
+    colaba en el `sorted({...})` de track_ids junto a los ids de texto y
+    reventaba al comparar float con str.
+
+    O sea: la PRIMERA corrida guardaba en caché los ISRC no encontrados, y
+    a partir de la segunda TODAS fallaban. Por eso no se veía en las
+    pruebas (caché siempre vacía) ni en la primera corrida.
+
+    Se aplica también a los ISRC de entrada: en otras semanas esa columna
+    puede venir con celdas vacías o numéricas (pandas la deja como `object`
+    con floats adentro), que romperían igual el `sorted(...)`.
+    """
+    if valor is None:
+        return None
+    if isinstance(valor, float) and pd.isna(valor):
+        return None
+    texto = str(valor).strip()
+    if not texto or texto.lower() in {"nan", "none", "nat"}:
+        return None
+    return texto
+
+
 def _crear_tablas(conn) -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS spotify_isrc_cache (
@@ -142,7 +176,18 @@ def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateCli
     real (credenciales desde el entorno) la primera vez que hace falta --
     útil para inyectar un doble de prueba sin tocar la API de verdad.
     """
-    isrcs_unicos = sorted(isrcs.dropna().unique())
+    # Normalizados a texto (o None) -- ver _texto_o_none: la columna puede
+    # traer vacíos o valores numéricos según la semana, y mezclarlos rompía
+    # el sorted(...) de abajo.
+    #
+    # Se arma como lista y se fuerza dtype=object a propósito, en vez de
+    # usar `isrcs.map(...)`: con el dtype de texto nuevo de pandas, `.map`
+    # infiere el tipo del resultado y vuelve a convertir los None en NaN
+    # (float), que es justo lo que estamos tratando de evitar acá. Forzando
+    # object, los None se quedan como None en cualquier versión de pandas.
+    valores_norm = [_texto_o_none(valor) for valor in isrcs]
+    isrcs_norm = pd.Series(valores_norm, index=isrcs.index, dtype=object)
+    isrcs_unicos = sorted({isrc for isrc in valores_norm if isrc is not None})
     if not isrcs_unicos:
         return pd.Series([None] * len(isrcs), index=isrcs.index)
 
@@ -155,14 +200,23 @@ def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateCli
             f"SELECT isrc, track_id FROM spotify_isrc_cache WHERE isrc IN ({marcador})",
             conn, params=isrcs_unicos,
         )
-        track_id_por_isrc = dict(zip(cache_isrc["isrc"], cache_isrc["track_id"]))
+        # _texto_o_none en el track_id: un ISRC ya buscado y NO encontrado
+        # queda cacheado con track_id NULL, que pandas devuelve como NaN
+        # (ver _texto_o_none). Se guarda como None para poder distinguir
+        # "ya lo busqué y no está" (está en el dict, con valor None) de
+        # "todavía no lo busqué" (no está en el dict) -- así no se vuelve a
+        # gastar una llamada a la API por él en cada corrida.
+        track_id_por_isrc = {
+            isrc: _texto_o_none(track_id)
+            for isrc, track_id in zip(cache_isrc["isrc"], cache_isrc["track_id"])
+        }
         isrcs_faltantes = [isrc for isrc in isrcs_unicos if isrc not in track_id_por_isrc]
 
         if isrcs_faltantes:
             cliente = cliente or SpotifyReleaseDateClient()
             nuevas_filas = []
             for isrc in isrcs_faltantes:
-                track_id = cliente.buscar_track_id_por_isrc(isrc)
+                track_id = _texto_o_none(cliente.buscar_track_id_por_isrc(isrc))
                 track_id_por_isrc[isrc] = track_id
                 nuevas_filas.append((isrc, track_id))
             conn.executemany(
@@ -171,7 +225,10 @@ def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateCli
             )
             conn.commit()
 
-        track_ids_unicos = sorted({tid for tid in track_id_por_isrc.values() if tid})
+        # OJO: el filtro tiene que ser `is not None`, no `if tid` -- ver
+        # _texto_o_none: un NaN pasaría el `if tid` (bool(nan) es True) y
+        # rompería este sorted() al comparar float con str.
+        track_ids_unicos = sorted({tid for tid in track_id_por_isrc.values() if tid is not None})
         fecha_por_track_id = {}
         if track_ids_unicos:
             marcador_tid = ",".join("?" * len(track_ids_unicos))
@@ -180,7 +237,13 @@ def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateCli
                 f"WHERE track_id IN ({marcador_tid})",
                 conn, params=track_ids_unicos,
             )
-            fecha_por_track_id = dict(zip(cache_fecha["track_id"], cache_fecha["release_date"]))
+            # Mismo cuidado que con los track_id: una fecha cacheada como
+            # NULL (track sin álbum) vuelve como NaN y no debe escribirse
+            # como "nan" en la celda del Excel.
+            fecha_por_track_id = {
+                tid: _texto_o_none(fecha)
+                for tid, fecha in zip(cache_fecha["track_id"], cache_fecha["release_date"])
+            }
 
         track_ids_faltantes = [tid for tid in track_ids_unicos if tid not in fecha_por_track_id]
         if track_ids_faltantes:
@@ -199,4 +262,11 @@ def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateCli
         isrc: fecha_por_track_id.get(track_id_por_isrc.get(isrc))
         for isrc in isrcs_unicos
     }
-    return isrcs.map(fecha_por_isrc)
+    # Se mapea sobre los ISRC ya normalizados (no sobre los originales),
+    # para que las claves coincidan aunque la fuente los traiga con
+    # espacios de más o como número. dtype=object por el mismo motivo de
+    # arriba: que los None sigan siendo None y no se conviertan en NaN.
+    return pd.Series(
+        [fecha_por_isrc.get(isrc) if isrc is not None else None for isrc in isrcs_norm],
+        index=isrcs.index, dtype=object,
+    )
