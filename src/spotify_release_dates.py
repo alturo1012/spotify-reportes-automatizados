@@ -38,13 +38,25 @@ import time
 
 import pandas as pd
 
+from . import config, history
+
 try:
     from dotenv import load_dotenv
+    # OJO con el .exe (PyInstaller): `load_dotenv()` sin argumentos busca el
+    # .env relativo al código, y en el .exe el código vive en una carpeta
+    # temporal (_MEIxxxx) que se borra al cerrar -- ahí nunca está el .env
+    # del usuario, que queda junto al ejecutable. Por eso se apunta primero
+    # y explícitamente a config.ROOT_DIR, que ya resuelve "la carpeta del
+    # .exe" cuando está empaquetado (ver config._calcular_root_dir; es el
+    # mismo problema que ya se había corregido en el Paso 7 para la base del
+    # histórico). Bug real: con el .exe la columna "Fecha Lzto" salía vacía
+    # porque las credenciales nunca se llegaban a cargar.
+    load_dotenv(config.ROOT_DIR / ".env")
+    # Además el comportamiento normal (repo / carpeta actual), para cuando
+    # se corre con `python -m src.main`.
     load_dotenv()
 except ImportError:  # python-dotenv es opcional -- si no está, se sigue
     pass            # confiando en variables de entorno ya exportadas.
-
-from . import history
 
 
 def _crear_tablas(conn) -> None:

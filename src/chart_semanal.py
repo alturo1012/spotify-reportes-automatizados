@@ -195,6 +195,22 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     return listado.head(config.TOP_N_LISTADO_CANCIONES).reset_index(drop=True)
 
 
+# Motivo por el que la última corrida no pudo resolver fechas de
+# lanzamiento (None si salió bien o si todavía no se intentó). Existe porque
+# el .exe se empaqueta con --windowed, es decir SIN consola: el `print(...)`
+# del aviso no lo ve nadie cuando se usa la app empaquetada. La GUI lee esto
+# después de generar para poder mostrarlo en el mensaje final (ver
+# gui.generar / App._exito). Bug real: el usuario generó un reporte con el
+# .exe, la columna salió vacía, y no tenía forma de saber por qué.
+_ULTIMO_AVISO_FECHAS = None
+
+
+def ultimo_aviso_fechas():
+    """Devuelve el motivo del último fallo al resolver fechas de lanzamiento
+    (o None si la última corrida salió bien)."""
+    return _ULTIMO_AVISO_FECHAS
+
+
 def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFrame:
     """Agrega la columna "fecha_lanzamiento" al listado de canciones,
     resuelta vía Spotify a partir de "isrc" (ver
@@ -206,6 +222,9 @@ def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFra
     falla, la columna queda en blanco para esta corrida y se vuelve a
     intentar la próxima vez (la caché ya resuelta no se pierde).
     """
+    global _ULTIMO_AVISO_FECHAS
+    _ULTIMO_AVISO_FECHAS = None
+
     listado = listado.copy()
     if listado.empty or "isrc" not in listado.columns:
         listado["fecha_lanzamiento"] = None
@@ -215,10 +234,12 @@ def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFra
             listado["isrc"], cliente=cliente
         )
     except Exception as e:
-        print(
-            f"Aviso: no se pudieron resolver fechas de lanzamiento vía Spotify ({e}). "
-            "El reporte se genera igual, sin esa columna llena por ahora."
+        _ULTIMO_AVISO_FECHAS = (
+            f"No se pudieron resolver las fechas de lanzamiento vía Spotify ({e}). "
+            "El reporte se generó igual, con esa columna vacía; se vuelve a intentar "
+            "en la próxima corrida."
         )
+        print(f"Aviso: {_ULTIMO_AVISO_FECHAS}")
         listado["fecha_lanzamiento"] = None
     return listado
 
