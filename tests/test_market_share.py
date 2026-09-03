@@ -95,6 +95,29 @@ def test_ytd_recorta_a_las_semanas_disponibles_del_anio_anterior(tmp_path):
     pd.testing.assert_frame_equal(tabla_hasta_2, tabla_hasta_5)
 
 
+def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path):
+    # Validación Paso 6: siembra el histórico REAL de producción (los CSV de
+    # data/history/seed/, no datos sintéticos) y compara contra valores
+    # tomados a mano de Reporte_MS_MS TOP 200 Spotify YTD 2026 vs 2025 a Sem
+    # 24 de 2026.xlsx, pestaña "% Market Share". La validación completa (17
+    # países x 7 sellos x 2 años = 238 valores) se hizo aparte y coincidió
+    # exactamente (diferencia máxima ~1e-16, puro redondeo de floats); este
+    # test deja 3 de esos casos reales fijos como regresión rápida.
+    history.seed_historico()  # usa los CSV reales por defecto (SEED_CHART_CSV/SEED_MS_CSV)
+
+    casos_reales = [
+        # (pais, label_group, pct_YTD_2026, pct_YTD_2025)
+        ("CO", "Universal", 0.11802973692530637, 0.18849274681645184),
+        ("VE", "Sony", 0.15741337214711393, 0.20411299870104793),
+        ("PN", "Orchard", 0.251658, 0.250028),
+    ]
+    for pais, label, esperado_26, esperado_25 in casos_reales:
+        tabla = market_share.calcular_ytd_por_pais(pais, 2026, hasta_semana=24)
+        fila = tabla[tabla.label_group == label].iloc[0]
+        assert fila[f"pct_YTD_2026"] == pytest.approx(esperado_26, abs=1e-5)
+        assert fila[f"pct_YTD_2025"] == pytest.approx(esperado_25, abs=1e-5)
+
+
 def test_construir_resumen_pct_trae_los_17_paises_de_config(tmp_path):
     from src import config
 

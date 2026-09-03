@@ -89,6 +89,40 @@ def test_construir_detalle_tracks_ordena_por_pais_y_posicion(tmp_path):
     assert list(detalle["position"]) == [1, 2, 1]
 
 
+def test_conteo_universal_coincide_con_datos_reales_de_colombia_semana_24(tmp_path):
+    # Validación Paso 6: estos son los 10 tracks REALES del Top 10 de Colombia
+    # en la semana del 2026-06-11 (BASE Informe Sportify charts Semana 24),
+    # tal cual venían en la fuente cruda (position, label_group). El conteo
+    # "Universal" para TOP 10 en el reporte oficial (Reporte_Chart_Top Semanal
+    # Spotify Latam a Sem 24 de 2026.xlsm, fila de la semana 24) es 1 -- y la
+    # validación completa (17 países x 5 bandas = 85 valores, hecha aparte
+    # contra BASE Informe Sportify charts Semana 24 y el reporte oficial)
+    # confirmó que este método coincide exactamente en los 85 casos. Este
+    # test deja un caso real fijo como regresión rápida.
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    top10_reales_co = [
+        (1, "Warner"), (2, "Warner"), (3, "INgrooves"), (4, "INgrooves"),
+        (5, "Warner"), (6, "Warner"), (7, "Warner"), (8, "Sony"),
+        (9, "Universal"), (10, "Warner"),
+    ]
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"] * 10,
+        "label_group": [lbl for _, lbl in top10_reales_co],
+        "position": [pos for pos, _ in top10_reales_co],
+        "stream_count": [1_000_000] * 10,
+        "chart_date": pd.to_datetime(["2026-06-11"] * 10),
+    })
+    history.append_semana_chart(df_semana)
+
+    resumen = chart_semanal.construir_resumen_total()
+    assert resumen.iloc[0]["CO_top10"] == 1  # valor oficial real verificado
+
+
 def test_generar_reporte_escribe_las_dos_pestanas(tmp_path):
     chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
                            ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
