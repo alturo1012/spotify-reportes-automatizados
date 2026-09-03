@@ -298,3 +298,61 @@ def test_resumen_total_incluye_el_listado_de_canciones_debajo_de_la_serie_histor
     assert ws.cell(row=13, column=5).value == 1  # CO, banda 10
     assert ws.cell(row=13, column=col_paises).value == 1
     assert ws.cell(row=13, column=col_suma).value == 1
+
+
+def test_color_semaforo_participacion_universal():
+    # Ejemplo confirmado con el usuario para banda=10 (objetivo = 3 canciones,
+    # 30% de 10): 1-2 -> rojo, 3 -> amarillo, 4-10 -> verde. 0 se trata igual
+    # que 1-2 (rojo, todavía más lejos del objetivo).
+    assert chart_semanal._color_semaforo(10, 0) is chart_semanal._RELLENO_ROJO
+    assert chart_semanal._color_semaforo(10, 1) is chart_semanal._RELLENO_ROJO
+    assert chart_semanal._color_semaforo(10, 2) is chart_semanal._RELLENO_ROJO
+    assert chart_semanal._color_semaforo(10, 3) is chart_semanal._RELLENO_AMARILLO
+    assert chart_semanal._color_semaforo(10, 4) is chart_semanal._RELLENO_VERDE
+    assert chart_semanal._color_semaforo(10, 10) is chart_semanal._RELLENO_VERDE
+    # Mismo criterio (30%) aplicado a las demás bandas -> objetivo 9/15/30/60
+    assert chart_semanal._color_semaforo(30, 9) is chart_semanal._RELLENO_AMARILLO
+    assert chart_semanal._color_semaforo(50, 15) is chart_semanal._RELLENO_AMARILLO
+    assert chart_semanal._color_semaforo(100, 30) is chart_semanal._RELLENO_AMARILLO
+    assert chart_semanal._color_semaforo(200, 60) is chart_semanal._RELLENO_AMARILLO
+    # Sin dato -> sin color
+    assert chart_semanal._color_semaforo(10, None) is None
+
+
+def test_resumen_total_colorea_conteo_universal_segun_participacion(tmp_path):
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    # Top 10 de Colombia: 2 Universal -> rojo (objetivo 3). Top 10 de Perú:
+    # 3 Universal -> amarillo. Top 10 de Ecuador: 5 Universal -> verde.
+    filas = []
+    for pais, universales in [("CO", 2), ("PE", 3), ("EC", 5)]:
+        for i in range(10):
+            label = "Universal" if i < universales else "Sony"
+            filas.append({"country_code": pais, "position": i + 1, "label_group": label})
+    df_semana = pd.DataFrame({
+        "country_code": [f["country_code"] for f in filas],
+        "chart_date": pd.to_datetime(["2026-06-18"] * len(filas)),
+        "position": [f["position"] for f in filas],
+        "artist": ["a"] * len(filas),
+        "song_name": ["x"] * len(filas),
+        "stream_count": [1_000_000] * len(filas),
+        "label_group": [f["label_group"] for f in filas],
+        "label_name": ["UMG"] * len(filas),
+    })
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.CHART_SHEET_RESUMEN]
+
+    celda_co = ws.cell(row=7, column=5)  # CO_top10
+    celda_pe = ws.cell(row=7, column=11)  # PE_top10
+    celda_ec = ws.cell(row=7, column=17)  # EC_top10
+
+    assert celda_co.value == 2 and celda_co.fill.fgColor.rgb.endswith(config.COLOR_SEMAFORO_ROJO)
+    assert celda_pe.value == 3 and celda_pe.fill.fgColor.rgb.endswith(config.COLOR_SEMAFORO_AMARILLO)
+    assert celda_ec.value == 5 and celda_ec.fill.fgColor.rgb.endswith(config.COLOR_SEMAFORO_VERDE)

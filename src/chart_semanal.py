@@ -18,10 +18,20 @@ se acaba de cargar, no una serie histórica.
 """
 from pathlib import Path
 import pandas as pd
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import config, history
+
+_RELLENO_ROJO = PatternFill(
+    start_color=config.COLOR_SEMAFORO_ROJO, end_color=config.COLOR_SEMAFORO_ROJO, fill_type="solid"
+)
+_RELLENO_AMARILLO = PatternFill(
+    start_color=config.COLOR_SEMAFORO_AMARILLO, end_color=config.COLOR_SEMAFORO_AMARILLO, fill_type="solid"
+)
+_RELLENO_VERDE = PatternFill(
+    start_color=config.COLOR_SEMAFORO_VERDE, end_color=config.COLOR_SEMAFORO_VERDE, fill_type="solid"
+)
 
 # Layout de la pestaña "Resumen Total", replicando el formato visual de la
 # plantilla original (PLANTILLA_SEMANAL_ChartTop.xlsm / Reporte_Chart_Top
@@ -40,10 +50,14 @@ from . import config, history
 #     pero en vez de un conteo, la posición real de cada canción en el país
 #     donde aparece (ver _escribir_listado_canciones).
 # NOTA: la plantilla original también trae una fila 1-2 con una leyenda
-# "TOP 10/30/50/100/200" y unos valores de referencia (3/9/15/30/60) que no
-# se pudieron confirmar de dónde salen (no son datos calculados) -- se dejó
-# fuera de este primer ajuste de formato a propósito; se puede agregar
-# después si hace falta.
+# "TOP 10/30/50/100/200" y unos valores de referencia (3/9/15/30/60) que en
+# su momento no se pudieron confirmar de dónde salían -- ya se explicaron:
+# son el objetivo de participación de Universal (30% de cada banda, ver
+# config.PCT_OBJETIVO_UNIVERSAL y _color_semaforo) redondeado a entero
+# (10/30/50/100/200 x 30% = 3/9/15/30/60 exacto). Esa leyenda en sí (las dos
+# filas fijas arriba de todo) sigue sin replicarse -- se puede agregar si
+# hace falta, ahora que se sabe qué representa.
+
 _COL_ANIO = 1
 _COL_MES = 2
 _COL_SEMANA = 3
@@ -172,6 +186,31 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     return listado.head(config.TOP_N_LISTADO_CANCIONES).reset_index(drop=True)
 
 
+def _color_semaforo(banda: int, conteo):
+    """Semáforo de participación de Universal para una celda conteo_universal
+    de la serie histórica (banda/país/semana): el objetivo es que Universal
+    tenga config.PCT_OBJETIVO_UNIVERSAL (30%) de los tracks de esa banda.
+
+    - Rojo: por debajo del objetivo (incluye 0 -- el usuario dio el ejemplo
+      con 1-2 canciones para banda=10, no mencionó el caso de 0, se trata
+      igual de rojo por estar aún más lejos del objetivo. Avisar si no es
+      lo esperado).
+    - Amarillo: exactamente en el objetivo (3 de 10, 9 de 30, 15 de 50, 30
+      de 100, 60 de 200).
+    - Verde: por encima del objetivo.
+
+    None (sin color) si no hay dato (celda vacía / NaN).
+    """
+    if conteo is None or (isinstance(conteo, float) and pd.isna(conteo)):
+        return None
+    objetivo = round(banda * config.PCT_OBJETIVO_UNIVERSAL)
+    if conteo < objetivo:
+        return _RELLENO_ROJO
+    if conteo == objetivo:
+        return _RELLENO_AMARILLO
+    return _RELLENO_VERDE
+
+
 def _escribir_bloques_pais(ws, fila_header_pais: int, fila_header_banda: int, aplicar_anchos: bool):
     """Escribe un juego de encabezados de país/banda (celda de país
     combinada arriba, bandas 10/30/50/100/200 debajo, columna angosta de
@@ -280,7 +319,10 @@ def _escribir_resumen_total(writer: pd.ExcelWriter, resumen: pd.DataFrame, df_se
             for i_banda, banda in enumerate(config.BANDAS_CHART):
                 nombre_columna = f"{pais}_top{banda}"
                 valor = getattr(fila, nombre_columna, None)
-                ws.cell(row=r, column=col_inicio + i_banda, value=valor)
+                celda = ws.cell(row=r, column=col_inicio + i_banda, value=valor)
+                relleno = _color_semaforo(banda, valor)
+                if relleno is not None:
+                    celda.fill = relleno
 
     ws.freeze_panes = f"{get_column_letter(_COL_PRIMER_PAIS)}{_FILA_PRIMER_DATO}"
 

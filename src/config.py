@@ -171,6 +171,24 @@ MESES_ES_ABREV = {
     9: "sep", 10: "oct", 11: "nov", 12: "dic",
 }
 
+# Semáforo de participación de Universal en la serie histórica de "Resumen
+# Total" (color de fondo de cada celda conteo_universal, según qué tan cerca
+# está del objetivo de participación de Universal en esa banda). Confirmado
+# con el usuario con el ejemplo de banda=10 (objetivo = 3 canciones, 30% de
+# 10): 1-2 canciones -> rojo, 3 -> amarillo, 4-10 -> verde. El mismo
+# porcentaje aplicado a las demás bandas (30/50/100/200) da exactamente
+# 9/15/30/60 -- los mismos números que traía la leyenda de la plantilla
+# original (fila 1-2) que antes no se había podido explicar; confirma que
+# el criterio se generaliza igual a todas las bandas.
+PCT_OBJETIVO_UNIVERSAL = 0.30
+
+# Colores estándar de "Reglas de resaltado de celdas" de Excel (rojo/
+# amarillo/verde suaves), para que el semáforo se vea como el de cualquier
+# reporte de Excel normal.
+COLOR_SEMAFORO_ROJO = "FFC7CE"
+COLOR_SEMAFORO_AMARILLO = "FFEB9C"
+COLOR_SEMAFORO_VERDE = "C6EFCE"
+
 # Cuántas canciones como máximo se listan en el "listado de canciones" de
 # "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con
 # todas las canciones de una semana (pueden ser 1000+) la hoja queda
