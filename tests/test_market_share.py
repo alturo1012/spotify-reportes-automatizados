@@ -181,3 +181,100 @@ def _csv_vacio_market(tmp_path, nombre, columnas):
     path = tmp_path / nombre
     pd.DataFrame(columns=columnas).to_csv(path, index=False)
     return path
+
+
+def _tracks_semana_co(chart_date, filas):
+    """filas: lista de (position, label_group, stream_count) -- arma un
+    df_semana mínimo de Colombia listo para history.append_semana_tracks."""
+    registros = [
+        {
+            "country_code": "CO", "chart_date": pd.Timestamp(chart_date),
+            "position": posicion, "artist": f"artista{posicion}", "song_name": f"cancion{posicion}",
+            "stream_count": streams, "label_group": label, "label_name": label,
+        }
+        for posicion, label, streams in filas
+    ]
+    return pd.DataFrame(registros)
+
+
+def test_calcular_streams_pct_grid_calcula_pct_por_banda_y_sello(tmp_path):
+    # pos1 Universal=100, pos2 Sony=100 (banda 10: 100/200=0.5 Universal)
+    # pos15 Universal=50 (banda 20+: Universal=150, Sony=100 -> 150/250=0.6)
+    # pos25 Sony=200 (banda 50+: Universal=150, Sony=300 -> 150/450=0.3333)
+    df_semana = _tracks_semana_co("2026-06-18", [
+        (1, "Universal", 100), (2, "Sony", 100), (15, "Universal", 50), (25, "Sony", 200),
+    ])
+    history.append_semana_tracks(df_semana)
+
+    grid = market_share.calcular_streams_pct_grid("CO")
+    pct = grid.set_index(["banda", "label_group"])["pct"]
+
+    assert pct[(10, "Universal")] == pytest.approx(0.5)
+    assert pct[(20, "Universal")] == pytest.approx(0.6)
+    assert pct[(50, "Universal")] == pytest.approx(150 / 450)
+    assert pct[(200, "Universal")] == pytest.approx(150 / 450)  # banda 200 = igual que 50 (no hay más tracks)
+    # sellos configurados que no aparecen en la semana quedan en 0, no se caen del grid
+    assert pct[(10, "Virgin")] == 0.0
+
+
+def test_calcular_streams_pct_grid_vacio_sin_historico(tmp_path):
+    grid = market_share.calcular_streams_pct_grid("CO")
+    assert list(grid.columns) == ["anio", "semana", "chart_date", "banda", "label_group", "pct"]
+    assert grid.empty
+
+
+def test_escribir_pagina_pais_arma_cuadricula_semanal_con_freeze_panes(tmp_path):
+    # Ajuste 7: pestaña individual de país reformateada a cuadrícula semanal
+    # (columnas = semanas, filas = banda/sello) -- verificado 1:1 contra la
+    # pestaña "CO" real de PLANTILLA_SEMANAL_MS_TOP200.xlsx (columna A =
+    # banda combinada, columna B = sello, fecha/semana en filas 2/3, freeze
+    # en la esquina de la primera celda de dato).
+    df_semana1 = _tracks_semana_co("2026-06-11", [(1, "Universal", 100), (2, "Sony", 100)])
+    df_semana2 = _tracks_semana_co("2026-06-18", [(1, "Universal", 30), (2, "Sony", 70)])
+    history.append_semana_tracks(df_semana1)
+    history.append_semana_tracks(df_semana2)
+
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana2, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb["CO"]
+
+    assert ws.freeze_panes == "C4"
+    assert "COLOMBIA" in ws.cell(row=1, column=1).value
+
+    # dos semanas -> dos columnas de datos (C y D)
+    assert ws.cell(row=2, column=3).value.date().isoformat() == "2026-06-11"
+    assert ws.cell(row=2, column=4).value.date().isoformat() == "2026-06-18"
+    assert ws.cell(row=2, column=3).number_format == "yyyy-mm-dd"
+    assert [ws.cell(row=3, column=c).value for c in (3, 4)] == [1, 2]
+
+    # fila 4 = primera fila de la banda 10 (primer sello de LABEL_GROUPS_MS)
+    assert ws.cell(row=4, column=2).value == config.LABEL_GROUPS_MS[0] == "Universal"
+    assert ws.cell(row=4, column=3).number_format == "0.0%"
+
+    # celda combinada de la banda 10 en columna A, filas 4-10 (7 sellos)
+    rangos_combinados = {str(rango) for rango in ws.merged_cells.ranges}
+    assert "A4:A10" in rangos_combinados
+    assert ws.cell(row=4, column=1).value == "Streams\n(%)\nTOP 10"
+
+    # el valor debe coincidir con calcular_streams_pct_grid (misma fuente)
+    grid = market_share.calcular_streams_pct_grid("CO")
+    pct = grid.set_index(["semana", "banda", "label_group"])["pct"]
+    assert ws.cell(row=4, column=3).value == pytest.approx(pct[(1, 10, "Universal")])
+    assert ws.cell(row=4, column=4).value == pytest.approx(pct[(2, 10, "Universal")])
+
+
+def test_escribir_pagina_pais_sin_historico_de_tracks_no_falla(tmp_path):
+    # Sin ninguna semana en chart_track_weekly todavía (fuente recién
+    # cargada por primera vez después de este ajuste): la pestaña debe salir
+    # con encabezados pero sin columnas de semana, sin reventar.
+    df_semana = _fuente_minima_ms(tmp_path)
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb["CO"]
+    assert ws.freeze_panes == "C4"
+    assert ws.cell(row=4, column=2).value == "Universal"
+    assert ws.cell(row=4, column=3).value is None

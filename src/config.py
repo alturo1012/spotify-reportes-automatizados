@@ -181,8 +181,10 @@ def normalizar_label_group(valor: str) -> str:
 BANDAS_CHART = [10, 30, 50, 100, 200]
 
 # Bandas usadas en PLANTILLA_SEMANAL_MS_TOP200.xlsx (filas "Tracks TOP N" /
-# "Streams TOP N"). Hoy solo se usa la de 200 para el % Market Share, pero se
-# deja la lista completa por si se necesitan las otras bandas más adelante.
+# "Streams TOP N" / "Streams (%) TOP N"). El resumen "% Market Share" (fila
+# 99-112, ver calcular_ytd_por_pais) solo usa la de 200; las 5 se usan en la
+# cuadrícula semanal de las pestañas individuales por país (ver
+# market_share._escribir_pagina_pais).
 BANDAS_MARKET_SHARE = [10, 20, 50, 100, 200]
 
 # Nombres de mes en español, tal cual aparecen en la columna "mes" del

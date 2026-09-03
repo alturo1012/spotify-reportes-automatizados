@@ -14,9 +14,24 @@ año anterior. NO es un promedio de porcentajes semanales.
 
 La pestaña resumen "% Market Share" se escribe como una cuadrícula de
 tablas, una por país (4 por fila de bloques), replicando el formato visual
-de PLANTILLA_SEMANAL_MS_TOP200.xlsx -- ver _escribir_resumen_pct. Las
-pestañas individuales por país (una por config.PAISES_MS) siguen siendo
-tablas planas simples, sin cambios.
+de PLANTILLA_SEMANAL_MS_TOP200.xlsx -- ver _escribir_resumen_pct.
+
+Las pestañas individuales por país (una por config.PAISES_MS) son ahora una
+cuadrícula semanal: columnas = semanas ya guardadas en
+history.chart_track_weekly (fecha + n° de semana), filas = las 5 bandas de
+config.BANDAS_MARKET_SHARE, cada una con las 7 filas de sello de
+config.LABEL_GROUPS_MS -- replica la sub-tabla "Streams (%)" de
+PLANTILLA_SEMANAL_MS_TOP200.xlsx (ver _escribir_pagina_pais / Ajuste 7 en
+el plan). Las otras dos sub-tablas de la plantilla real por banda ("Tracks"
+y "Streams" crudo) se dejaron fuera a pedido del usuario -- solo la de "%".
+
+Ojo con el histórico disponible: esta cuadrícula solo puede tener columnas
+para las semanas que ya se guardaron en chart_track_weekly, que empezó a
+llenarse recién en el Ajuste 5 (no tiene sembrado retroactivo de años
+anteriores, a diferencia de ms_label_weekly). El usuario decidió a
+propósito no importar el histórico ya calculado del archivo real (que sí
+llega hasta 2021) -- la cuadrícula arranca vacía y se va llenando semana a
+semana hacia adelante, igual que Detalle Tracks.
 """
 from pathlib import Path
 import pandas as pd
@@ -75,6 +90,41 @@ def calcular_ytd_por_pais(
             f"pct_YTD_{anio_anterior}": pct_anterior,
             "g_l": pct_actual - pct_anterior,
         })
+    return pd.DataFrame(filas)
+
+
+def calcular_streams_pct_grid(country_code: str) -> pd.DataFrame:
+    """Tabla larga (tidy) con el % de streams por banda y sello, semana a
+    semana, para un país -- igual a lo que muestran las sub-tablas
+    "Streams (%) TOP N" de PLANTILLA_SEMANAL_MS_TOP200.xlsx, pero a partir
+    del detalle track-por-track de history.chart_track_weekly (no de un
+    agregado guardado aparte -- se calcula al vuelo cada vez que se genera
+    el reporte).
+
+    Una fila por (anio, semana, chart_date, banda, label_group, pct). Solo
+    incluye las semanas que ya están en chart_track_weekly para ese país
+    (ver nota del módulo sobre por qué no hay histórico antes del Ajuste 5).
+    """
+    tracks = history.cargar_chart_track_weekly()
+    tracks = tracks[tracks["country_code"] == country_code].copy()
+    if tracks.empty:
+        return pd.DataFrame(columns=["anio", "semana", "chart_date", "banda", "label_group", "pct"])
+
+    tracks["stream_count"] = tracks["stream_count"].fillna(0.0)
+
+    filas = []
+    for (anio, semana, chart_date), grupo_semana in tracks.groupby(["anio", "semana", "chart_date"]):
+        for banda in config.BANDAS_MARKET_SHARE:
+            grupo_banda = grupo_semana[grupo_semana["position"] <= banda]
+            total = grupo_banda["stream_count"].sum()
+            streams_por_label = grupo_banda.groupby("label_group")["stream_count"].sum()
+            for label in config.LABEL_GROUPS_MS:
+                streams_label = float(streams_por_label.get(label, 0.0))
+                pct = streams_label / total if total else 0.0
+                filas.append({
+                    "anio": anio, "semana": semana, "chart_date": chart_date,
+                    "banda": banda, "label_group": label, "pct": pct,
+                })
     return pd.DataFrame(filas)
 
 
@@ -187,6 +237,91 @@ def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int) -> None:
     ws.freeze_panes = "A4"
 
 
+# Layout de la pestaña individual de cada país (ver calcular_streams_pct_grid
+# y el docstring del módulo). Verificado contra la pestaña "CO" real de
+# PLANTILLA_SEMANAL_MS_TOP200.xlsx: columna A = banda (combinada verticalmente
+# sobre sus 7 filas de sello), columna B = sello, columnas C+ = una por
+# semana. Fila 2 = fecha, fila 3 = n° de semana -- esas dos filas y las
+# columnas A/B quedan fijas (freeze_panes), igual que las columnas de tops y
+# disquera quedan fijas al desplazarse a la derecha (pedido explícito del
+# usuario).
+_MSPAIS_COL_BANDA = 1
+_MSPAIS_COL_LABEL = 2
+_MSPAIS_COL_PRIMERA_SEMANA = 3
+_MSPAIS_FILA_TITULO = 1
+_MSPAIS_FILA_FECHA = 2
+_MSPAIS_FILA_SEMANA = 3
+_MSPAIS_FILA_PRIMER_DATO = 4
+
+
+def _escribir_pagina_pais(ws, country_code: str) -> None:
+    """Escribe la pestaña individual de un país como cuadrícula semanal
+    (ver constantes _MSPAIS_* arriba). Si todavía no hay ninguna semana
+    guardada en chart_track_weekly para este país, la cuadrícula sale sin
+    columnas de datos (solo encabezados) -- se va llenando sola a medida
+    que se cargan bases nuevas.
+    """
+    negrita = Font(bold=True)
+    centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    nombre_visible = config.NOMBRE_PAIS_MS_RESUMEN.get(country_code, country_code)
+    celda_titulo = ws.cell(
+        row=_MSPAIS_FILA_TITULO, column=_MSPAIS_COL_BANDA,
+        value=f"{nombre_visible} - % Market Share por banda (Streams)",
+    )
+    celda_titulo.font = Font(bold=True, size=12)
+
+    grid = calcular_streams_pct_grid(country_code)
+    semanas = (
+        grid[["anio", "semana", "chart_date"]]
+        .drop_duplicates()
+        .sort_values(["anio", "semana"])
+        .reset_index(drop=True)
+    )
+    pct_por_celda = {
+        (r.anio, r.semana, r.banda, r.label_group): r.pct for r in grid.itertuples(index=False)
+    }
+
+    ws.cell(row=_MSPAIS_FILA_SEMANA, column=_MSPAIS_COL_LABEL, value="Etiquetas\nde fila").font = negrita
+
+    for j, s in enumerate(semanas.itertuples(index=False)):
+        col = _MSPAIS_COL_PRIMERA_SEMANA + j
+        celda_fecha = ws.cell(row=_MSPAIS_FILA_FECHA, column=col, value=pd.Timestamp(s.chart_date))
+        celda_fecha.number_format = "yyyy-mm-dd"
+        celda_fecha.font = negrita
+        celda_fecha.alignment = centrado
+        celda_semana = ws.cell(row=_MSPAIS_FILA_SEMANA, column=col, value=int(s.semana))
+        celda_semana.font = negrita
+        celda_semana.alignment = centrado
+        ws.column_dimensions[get_column_letter(col)].width = 11
+
+    fila = _MSPAIS_FILA_PRIMER_DATO
+    for banda in config.BANDAS_MARKET_SHARE:
+        fila_inicio_banda = fila
+        for label in config.LABEL_GROUPS_MS:
+            ws.cell(row=fila, column=_MSPAIS_COL_LABEL, value=label)
+            for j, s in enumerate(semanas.itertuples(index=False)):
+                col = _MSPAIS_COL_PRIMERA_SEMANA + j
+                valor = pct_por_celda.get((s.anio, s.semana, banda, label))
+                celda_valor = ws.cell(row=fila, column=col, value=valor)
+                celda_valor.number_format = "0.0%"
+            fila += 1
+
+        celda_banda = ws.cell(row=fila_inicio_banda, column=_MSPAIS_COL_BANDA, value=f"Streams\n(%)\nTOP {banda}")
+        ws.merge_cells(
+            start_row=fila_inicio_banda, start_column=_MSPAIS_COL_BANDA,
+            end_row=fila - 1, end_column=_MSPAIS_COL_BANDA,
+        )
+        celda_banda.font = negrita
+        celda_banda.alignment = centrado
+        fila += 1  # fila en blanco separadora entre bandas, igual que la plantilla real
+
+    ws.column_dimensions[get_column_letter(_MSPAIS_COL_BANDA)].width = 12
+    ws.column_dimensions[get_column_letter(_MSPAIS_COL_LABEL)].width = 14
+
+    ws.freeze_panes = ws.cell(row=_MSPAIS_FILA_PRIMER_DATO, column=_MSPAIS_COL_PRIMERA_SEMANA).coordinate
+
+
 def generar_reporte(
     df_semana: pd.DataFrame, output_path: Path, guardar_en_historico: bool = True
 ) -> Path:
@@ -209,7 +344,7 @@ def generar_reporte(
         ws_resumen = writer.book.create_sheet(config.MS_SHEET_PORCENTAJE)
         _escribir_resumen_pct(ws_resumen, anio_actual, hasta_semana)
         for country_code in config.PAISES_MS:
-            tabla_pais = calcular_ytd_por_pais(country_code, anio_actual, hasta_semana)
-            tabla_pais.to_excel(writer, sheet_name=country_code, index=False)
+            ws_pais = writer.book.create_sheet(country_code)
+            _escribir_pagina_pais(ws_pais, country_code)
 
     return output_path
