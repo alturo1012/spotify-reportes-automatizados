@@ -326,11 +326,12 @@ def _escribir_resumen_total(
     celda_semana.font = negrita_centrada
 
     # Columna A ("año" en la serie histórica, y "Artist/Título" en el
-    # listado de canciones de más abajo) más ancha de lo que necesita un año
-    # solo, para que los títulos largos tengan más espacio antes de
-    # desbordar visualmente hacia la columna B (que queda vacía en esas
-    # filas).
-    ws.column_dimensions[get_column_letter(_COL_ANIO)].width = 22
+    # listado de canciones de más abajo) mucho más ancha de lo que necesita
+    # un año solo, porque tiene que alcanzar para los títulos largos: desde
+    # que la fecha de lanzamiento se movió a la columna B (a pedido del
+    # usuario, ver _escribir_listado_canciones), los títulos ya no pueden
+    # desbordar visualmente hacia B como antes.
+    ws.column_dimensions[get_column_letter(_COL_ANIO)].width = 32
     ws.column_dimensions[get_column_letter(_COL_MES)].width = 12
     ws.column_dimensions[get_column_letter(_COL_SEMANA)].width = 10
     ws.column_dimensions[get_column_letter(_COL_SEPARADOR_INICIAL)].width = 2
@@ -411,10 +412,25 @@ def _escribir_listado_canciones(
     celda_cancion = ws.cell(row=fila_header_pais, column=_COL_ANIO, value="Artist/Título")
     ws.merge_cells(
         start_row=fila_header_pais, start_column=_COL_ANIO,
-        end_row=fila_header_banda, end_column=_COL_MES,
+        end_row=fila_header_banda, end_column=_COL_ANIO,
     )
     celda_cancion.alignment = centrado
     celda_cancion.font = negrita
+
+    # Fecha de lanzamiento (vía Spotify, ver agregar_fecha_lanzamiento) al
+    # lado del nombre de la canción, antes de "Región" -- así lo pidió el
+    # usuario mostrando la plantilla real (antes estaba al final, después de
+    # "Suma Posiciones"). Va en _COL_MES (columna B), que en las filas del
+    # listado está libre: así NO se corren los bloques de país, que tienen
+    # que seguir alineados con los de la serie histórica de arriba (ambos
+    # usan las mismas columnas, ver _escribir_bloques_pais).
+    celda_fecha_lanz = ws.cell(row=fila_header_pais, column=_COL_MES, value="Fecha Lzto")
+    ws.merge_cells(
+        start_row=fila_header_pais, start_column=_COL_MES,
+        end_row=fila_header_banda, end_column=_COL_MES,
+    )
+    celda_fecha_lanz.alignment = centrado
+    celda_fecha_lanz.font = negrita
 
     celda_region = ws.cell(row=fila_header_pais, column=_COL_SEMANA, value="Región")
     ws.merge_cells(
@@ -452,24 +468,15 @@ def _escribir_listado_canciones(
     celda_suma.font = negrita
     ws.column_dimensions[get_column_letter(col_suma)].width = 9
 
-    # Fecha de lanzamiento (vía Spotify, ver agregar_fecha_lanzamiento) --
-    # se agrega como tercera columna sin nombre al final, mismo patrón que
-    # "N° Países"/"Suma Posiciones". Ubicación decidida por Claude (no
-    # especificada por el usuario más allá de que fuera parte del listado);
-    # avisar si se prefiere en otra posición (ej. junto a "Región").
-    col_fecha = columna_siguiente_libre + 2
-    celda_fecha = ws.cell(row=fila_header_pais, column=col_fecha, value="Fecha de Lanzamiento")
-    ws.merge_cells(
-        start_row=fila_header_pais, start_column=col_fecha,
-        end_row=fila_header_banda, end_column=col_fecha,
-    )
-    celda_fecha.alignment = centrado
-    celda_fecha.font = negrita
-    ws.column_dimensions[get_column_letter(col_fecha)].width = 16
-
     for i, fila in enumerate(listado.itertuples(index=False)):
         r = fila_primer_dato + i
         ws.cell(row=r, column=_COL_ANIO, value=fila.cancion)
+        fecha_lanzamiento = getattr(fila, "fecha_lanzamiento", None)
+        if pd.notna(fecha_lanzamiento):
+            # Texto, no fecha de Excel a propósito -- Spotify a veces solo
+            # trae año o año-mes (release_date_precision), forzar un
+            # number_format de fecha rompería esos casos parciales.
+            ws.cell(row=r, column=_COL_MES, value=str(fecha_lanzamiento))
         ws.cell(row=r, column=_COL_SEMANA, value=fila.region)
 
         for pais in config.ORDEN_PAISES_CHART:
@@ -482,12 +489,6 @@ def _escribir_listado_canciones(
 
         ws.cell(row=r, column=col_paises, value=int(fila.paises_presente))
         ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))
-        fecha_lanzamiento = getattr(fila, "fecha_lanzamiento", None)
-        if pd.notna(fecha_lanzamiento):
-            # Texto, no fecha de Excel a propósito -- Spotify a veces solo
-            # trae año o año-mes (release_date_precision), forzar un
-            # number_format de fecha rompería esos casos parciales.
-            ws.cell(row=r, column=col_fecha, value=str(fecha_lanzamiento))
 
 
 # Layout de "Detalle Tracks": posición (1-200) fija a la izquierda y un
