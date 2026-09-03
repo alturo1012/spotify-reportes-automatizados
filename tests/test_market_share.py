@@ -3,10 +3,11 @@ tocan data/history/universal_data.db de verdad).
 
 Corre con: pytest tests/test_market_share.py -v
 """
+import openpyxl
 import pandas as pd
 import pytest
 
-from src import history, market_share
+from src import config, history, market_share
 
 
 @pytest.fixture(autouse=True)
@@ -119,10 +120,64 @@ def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path):
 
 
 def test_construir_resumen_pct_trae_los_17_paises_de_config(tmp_path):
-    from src import config
-
     _sembrar_dos_anios(tmp_path)
     resumen = market_share.construir_resumen_pct(2026, hasta_semana=2)
     assert set(resumen["country_code"].unique()) & {"CO"} == {"CO"}
     # Todos los países configurados deben aparecer, aunque sea con ceros.
     assert set(config.PAISES_MS) == set(resumen["country_code"].unique())
+
+
+def _fuente_minima_ms(tmp_path, chart_date="2026-06-18"):
+    filas = []
+    for pais in ["Colombia", "Peru"]:
+        for artista, sello in [("Artista A", "Universal"), ("Artista B", "Sony")]:
+            filas.append({
+                "country_code": pais[:2].upper(), "chart_date": pd.Timestamp(chart_date),
+                "position": 1, "artist": artista, "song_name": "x",
+                "stream_count": 1_000_000, "label_group": sello, "label_name": sello,
+            })
+    return pd.DataFrame(filas)
+
+
+def test_escribir_resumen_pct_arma_bloques_por_pais_con_freeze_panes(tmp_path):
+    # Ajuste 6: cuadrícula de tablas por país (en vez de tabla plana) y las
+    # primeras 3 filas (banner "TOP 200 WEEKLY MARKET SHARE") fijas al
+    # desplazarse -- verificado 1:1 contra PLANTILLA_SEMANAL_MS_TOP200.xlsx
+    # (fila 2 banner, fila 4/6/7 encabezados de bloque, freeze_panes A4,
+    # Colombia/Peru/Ecuador/Dominicana en las columnas B/G/L/Q).
+    chart_csv = _csv_vacio_market(tmp_path, "seed_chart.csv",
+                                   ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 30.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 10.0, "chart_date": "2026-01-01"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 5.0, "chart_date": "2025-01-01"},
+    ]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = _fuente_minima_ms(tmp_path)
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.MS_SHEET_PORCENTAJE]
+
+    assert ws.freeze_panes == "A4"
+    assert ws.cell(row=2, column=2).value == "TOP 200 WEEKLY MARKET SHARE"
+    assert ws.cell(row=4, column=2).value == "COLOMBIA"  # bloque 1 -> columna B
+    assert ws.cell(row=4, column=7).value == "PERU"  # bloque 2 -> columna G
+    assert ws.cell(row=4, column=17).value == "DOMINICANA"  # bloque 4 -> columna Q (orden nuevo)
+    assert [ws.cell(row=6, column=c).value for c in range(2, 6)] == ["COLOMBIA", "YTD 26", "YTD 25", "G/L"]
+    # orden de sellos del resumen: Universal, Sony, INgrooves... (distinto al de LABEL_GROUPS_MS)
+    assert [ws.cell(row=r, column=2).value for r in range(7, 14)] == config.ORDEN_LABELS_MS_RESUMEN
+    assert ws.cell(row=7, column=3).number_format == "0.0%"
+
+    # el valor debe coincidir con calcular_ytd_por_pais (misma fórmula validada)
+    tabla_co = market_share.calcular_ytd_por_pais("CO", 2026, 1).set_index("label_group")
+    assert ws.cell(row=7, column=3).value == pytest.approx(tabla_co.loc["Universal", "pct_YTD_2026"])
+
+
+def _csv_vacio_market(tmp_path, nombre, columnas):
+    path = tmp_path / nombre
+    pd.DataFrame(columns=columnas).to_csv(path, index=False)
+    return path
