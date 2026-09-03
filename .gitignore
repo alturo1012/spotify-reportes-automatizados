@@ -25,3 +25,10 @@ data/output/*
 
 # Base histórica local (se genera con scripts/sembrar_historico.py) - no se sube a git
 data/history/*.db
+
+# Empaquetado de la GUI con PyInstaller (Paso 7, ver build.bat) - se genera
+# localmente, no se sube a git. El .exe se queda en la raíz del repo (junto
+# a build.bat) pero tampoco se sube: cada quien lo genera con build.bat.
+build_pyinstaller/
+*.spec
+ReportesSpotifyLatam.exe

@@ -1,8 +1,33 @@
 """Configuración central: rutas y constantes del proyecto.
+
+Ver claude/mapeo_logica_plantillas.md (en el Project de Claude) para el
+detalle y la evidencia (fórmulas/macro reales) detrás de cada constante de
+este archivo.
 """
+import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+
+def _calcular_root_dir() -> Path:
+    """Carpeta raíz del proyecto (donde viven `data/`, `src/`, etc.).
+
+    Separado en una función (en vez de calcularlo directo al importar el
+    módulo) para poder probarlo con pytest simulando `sys.frozen`, sin
+    depender de si el proceso de test mismo está o no empaquetado.
+    """
+    if getattr(sys, "frozen", False):
+        # Corriendo empaquetado como .exe (PyInstaller, ver build.bat / Paso
+        # 7): los datos (histórico, fuente, reportes de salida) tienen que
+        # vivir junto al .exe, NO en la carpeta temporal donde PyInstaller
+        # descomprime el código cada vez que arranca (esa carpeta se borra
+        # al cerrar la app -- si ROOT_DIR apuntara ahí, el histórico se
+        # "perdería" cada vez). Por eso: no muevas el .exe fuera de la
+        # carpeta del proyecto; si lo mueves, copia también `data/` con él.
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT_DIR = _calcular_root_dir()
 RAW_DIR = ROOT_DIR / "data" / "raw"
 OUTPUT_DIR = ROOT_DIR / "data" / "output"
 
