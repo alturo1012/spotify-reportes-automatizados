@@ -96,7 +96,7 @@ def test_ytd_recorta_a_las_semanas_disponibles_del_anio_anterior(tmp_path):
     pd.testing.assert_frame_equal(tabla_hasta_2, tabla_hasta_5)
 
 
-def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path):
+def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path, seeds_reales):
     # Validación Paso 6: siembra el histórico REAL de producción (los CSV de
     # data/history/seed/, no datos sintéticos) y compara contra valores
     # tomados a mano de Reporte_MS_MS TOP 200 Spotify YTD 2026 vs 2025 a Sem
@@ -104,7 +104,9 @@ def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path):
     # países x 7 sellos x 2 años = 238 valores) se hizo aparte y coincidió
     # exactamente (diferencia máxima ~1e-16, puro redondeo de floats); este
     # test deja 3 de esos casos reales fijos como regresión rápida.
-    history.seed_historico()  # usa los CSV reales por defecto (SEED_CHART_CSV/SEED_MS_CSV)
+    # `seeds_reales` (ver tests/conftest.py) es lo que habilita los CSV
+    # reales de data/history/seed/; por defecto las pruebas están aisladas.
+    history.seed_historico()
 
     casos_reales = [
         # (pais, label_group, pct_YTD_2026, pct_YTD_2025)
@@ -185,7 +187,8 @@ def _csv_vacio_market(tmp_path, nombre, columnas):
 
 def _tracks_semana_co(chart_date, filas):
     """filas: lista de (position, label_group, stream_count) -- arma un
-    df_semana mínimo de Colombia listo para history.append_semana_tracks."""
+    df_semana mínimo de Colombia listo para history.append_semana_tracks o
+    history.append_semana_ms_bandas."""
     registros = [
         {
             "country_code": "CO", "chart_date": pd.Timestamp(chart_date),
@@ -204,7 +207,7 @@ def test_calcular_streams_pct_grid_calcula_pct_por_banda_y_sello(tmp_path):
     df_semana = _tracks_semana_co("2026-06-18", [
         (1, "Universal", 100), (2, "Sony", 100), (15, "Universal", 50), (25, "Sony", 200),
     ])
-    history.append_semana_tracks(df_semana)
+    history.append_semana_ms_bandas(df_semana)
 
     grid = market_share.calcular_streams_pct_grid("CO")
     pct = grid.set_index(["banda", "label_group"])["pct"]
@@ -231,10 +234,11 @@ def test_escribir_pagina_pais_arma_cuadricula_semanal_con_freeze_panes(tmp_path)
     # en la esquina de la primera celda de dato).
     df_semana1 = _tracks_semana_co("2026-06-11", [(1, "Universal", 100), (2, "Sony", 100)])
     df_semana2 = _tracks_semana_co("2026-06-18", [(1, "Universal", 30), (2, "Sony", 70)])
-    history.append_semana_tracks(df_semana1)
-    history.append_semana_tracks(df_semana2)
+    history.append_semana_ms_bandas(df_semana1)
 
     salida = tmp_path / "reporte.xlsx"
+    # La segunda semana la guarda el propio generar_reporte (así se usa de
+    # verdad: cargar la fuente de la semana genera el reporte y la agrega).
     market_share.generar_reporte(df_semana2, salida)
 
     wb = openpyxl.load_workbook(salida)
@@ -265,16 +269,39 @@ def test_escribir_pagina_pais_arma_cuadricula_semanal_con_freeze_panes(tmp_path)
     assert ws.cell(row=4, column=4).value == pytest.approx(pct[(2, 10, "Universal")])
 
 
-def test_escribir_pagina_pais_sin_historico_de_tracks_no_falla(tmp_path):
-    # Sin ninguna semana en chart_track_weekly todavía (fuente recién
-    # cargada por primera vez después de este ajuste): la pestaña debe salir
-    # con encabezados pero sin columnas de semana, sin reventar.
+def test_escribir_pagina_pais_sin_historico_no_falla(tmp_path):
+    # Sin ninguna semana en ms_band_label_weekly y sin guardar la actual
+    # (histórico recién creado, base vacía): la pestaña debe salir con
+    # encabezados pero sin columnas de semana, sin reventar.
+    _sembrar_dos_anios(tmp_path)
     df_semana = _fuente_minima_ms(tmp_path)
     salida = tmp_path / "reporte.xlsx"
-    market_share.generar_reporte(df_semana, salida)
+    market_share.generar_reporte(df_semana, salida, guardar_en_historico=False)
 
     wb = openpyxl.load_workbook(salida)
     ws = wb["CO"]
     assert ws.freeze_panes == "C4"
     assert ws.cell(row=4, column=2).value == "Universal"
     assert ws.cell(row=4, column=3).value is None
+
+
+def test_generar_reporte_agrega_la_semana_a_la_cuadricula_por_pais(tmp_path):
+    # Antes, la cuadrícula por país solo se llenaba si la semana estaba en
+    # chart_track_weekly, que alimentaba chart_semanal (otro reporte). Ahora
+    # el propio Reporte_MS la guarda: generar el reporte deja la semana
+    # cargada visible en la pestaña del país, sin depender del otro reporte.
+    _sembrar_dos_anios(tmp_path)
+    df_semana = _fuente_minima_ms(tmp_path)
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana, salida)
+
+    guardado = history.cargar_ms_band_label_weekly()
+    assert not guardado.empty
+    assert set(guardado["banda"].unique()) == set(config.BANDAS_MARKET_SHARE)
+    assert set(guardado["label_group"].unique()) == set(config.LABEL_GROUPS_MS)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb["CO"]
+    assert ws.cell(row=2, column=3).value.date().isoformat() == "2026-06-18"
+    assert ws.cell(row=4, column=3).value == pytest.approx(0.5)  # Universal 1 de 2 tracks, mismos streams
+

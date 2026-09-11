@@ -25,13 +25,14 @@ PLANTILLA_SEMANAL_MS_TOP200.xlsx (ver _escribir_pagina_pais / Ajuste 7 en
 el plan). Las otras dos sub-tablas de la plantilla real por banda ("Tracks"
 y "Streams" crudo) se dejaron fuera a pedido del usuario -- solo la de "%".
 
-Ojo con el histórico disponible: esta cuadrícula solo puede tener columnas
-para las semanas que ya se guardaron en chart_track_weekly, que empezó a
-llenarse recién en el Ajuste 5 (no tiene sembrado retroactivo de años
-anteriores, a diferencia de ms_label_weekly). El usuario decidió a
-propósito no importar el histórico ya calculado del archivo real (que sí
-llega hasta 2021) -- la cuadrícula arranca vacía y se va llenando semana a
-semana hacia adelante, igual que Detalle Tracks.
+El histórico de esa cuadrícula vive en `history.ms_band_label_weekly` y
+tiene dos orígenes que se complementan: se sembró de una vez con los años
+que ya traía calculados el reporte real (2021 semana 1 -> 2026 semana 33,
+293 semanas x 17 países) y, de ahí en adelante, cada semana nueva se agrega
+sola al generar el reporte (`history.append_semana_ms_bandas`, misma
+fórmula). Antes se calculaba al vuelo desde `chart_track_weekly` y por eso
+salía casi vacía -- ver "Actualización a la semana 33" en
+claude/plan_fusion_paso_a_paso.md.
 """
 from pathlib import Path
 import pandas as pd
@@ -95,37 +96,30 @@ def calcular_ytd_por_pais(
 
 def calcular_streams_pct_grid(country_code: str) -> pd.DataFrame:
     """Tabla larga (tidy) con el % de streams por banda y sello, semana a
-    semana, para un país -- igual a lo que muestran las sub-tablas
-    "Streams (%) TOP N" de PLANTILLA_SEMANAL_MS_TOP200.xlsx, pero a partir
-    del detalle track-por-track de history.chart_track_weekly (no de un
-    agregado guardado aparte -- se calcula al vuelo cada vez que se genera
-    el reporte).
+    semana, para un país -- lo que muestran las sub-tablas "Streams (%)
+    TOP N" del reporte real.
 
-    Una fila por (anio, semana, chart_date, banda, label_group, pct). Solo
-    incluye las semanas que ya están en chart_track_weekly para ese país
-    (ver nota del módulo sobre por qué no hay histórico antes del Ajuste 5).
+    Sale directo de `history.ms_band_label_weekly`, que trae dos cosas
+    juntas: el histórico sembrado del reporte oficial (2021 en adelante) y
+    cada semana nueva que se va cargando (la calcula
+    `history.append_semana_ms_bandas` con la misma fórmula). Antes esto se
+    calculaba al vuelo desde `chart_track_weekly`, que solo tenía las
+    semanas cargadas después del Ajuste 5 -- por eso la cuadrícula salía
+    casi vacía.
+
+    Una fila por (anio, semana, chart_date, banda, label_group, pct).
     """
-    tracks = history.cargar_chart_track_weekly()
-    tracks = tracks[tracks["country_code"] == country_code].copy()
-    if tracks.empty:
-        return pd.DataFrame(columns=["anio", "semana", "chart_date", "banda", "label_group", "pct"])
+    columnas = ["anio", "semana", "chart_date", "banda", "label_group", "pct"]
+    historico = history.cargar_ms_band_label_weekly()
+    if historico.empty:
+        return pd.DataFrame(columns=columnas)
 
-    tracks["stream_count"] = tracks["stream_count"].fillna(0.0)
+    del_pais = historico[historico["country_code"] == country_code]
+    if del_pais.empty:
+        return pd.DataFrame(columns=columnas)
 
-    filas = []
-    for (anio, semana, chart_date), grupo_semana in tracks.groupby(["anio", "semana", "chart_date"]):
-        for banda in config.BANDAS_MARKET_SHARE:
-            grupo_banda = grupo_semana[grupo_semana["position"] <= banda]
-            total = grupo_banda["stream_count"].sum()
-            streams_por_label = grupo_banda.groupby("label_group")["stream_count"].sum()
-            for label in config.LABEL_GROUPS_MS:
-                streams_label = float(streams_por_label.get(label, 0.0))
-                pct = streams_label / total if total else 0.0
-                filas.append({
-                    "anio": anio, "semana": semana, "chart_date": chart_date,
-                    "banda": banda, "label_group": label, "pct": pct,
-                })
-    return pd.DataFrame(filas)
+    grid = del_pais.rename(columns={"pct_streams": "pct"})[columnas]
+    return grid.reset_index(drop=True)
 
 
 def construir_resumen_pct(anio_actual: int, hasta_semana: int) -> pd.DataFrame:
@@ -333,6 +327,10 @@ def generar_reporte(
     """
     if guardar_en_historico:
         history.append_semana_ms(df_semana)
+        # Alimenta la cuadrícula semanal de las pestañas por país. Va junto
+        # a append_semana_ms (mismo reporte, misma corrida) para que las dos
+        # tablas avancen a la par.
+        history.append_semana_ms_bandas(df_semana)
 
     fecha = pd.Timestamp(df_semana["chart_date"].unique()[0])
     anio_actual = fecha.year
@@ -348,3 +346,4 @@ def generar_reporte(
             _escribir_pagina_pais(ws_pais, country_code)
 
     return output_path
+

@@ -46,6 +46,7 @@ DB_PATH = config.ROOT_DIR / "data" / "history" / "universal_data.db"
 SEED_DIR = config.ROOT_DIR / "data" / "history" / "seed"
 SEED_CHART_CSV = SEED_DIR / "seed_chart_band_weekly.csv"
 SEED_MS_CSV = SEED_DIR / "seed_ms_label_weekly.csv"
+SEED_MS_BANDAS_CSV = SEED_DIR / "seed_ms_band_label_weekly.csv"
 
 
 def conectar() -> sqlite3.Connection:
@@ -105,14 +106,47 @@ def _conectar() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ms_band_label_weekly (
+            anio INTEGER NOT NULL,
+            semana INTEGER NOT NULL,
+            chart_date TEXT,
+            country_code TEXT NOT NULL,
+            banda INTEGER NOT NULL,
+            label_group TEXT NOT NULL,
+            pct_streams REAL NOT NULL,
+            PRIMARY KEY (anio, semana, country_code, banda, label_group)
+        )
+        """
+    )
     return conn
 
 
-def seed_historico(chart_csv: Path = SEED_CHART_CSV, ms_csv: Path = SEED_MS_CSV) -> None:
+def seed_historico(
+    chart_csv: Path = None,
+    ms_csv: Path = None,
+    ms_bandas_csv: Path = None,
+) -> None:
     """Carga UNA VEZ el histórico ya extraído de los reportes/plantillas
     reales. Es seguro correrlo más de una vez: usa INSERT OR IGNORE, así que
     no duplica filas si ya estaban cargadas.
+
+    Cada parámetro en None usa el CSV de siembra que le corresponde
+    (SEED_*_CSV). Se resuelven ACÁ ADENTRO y no como valor por defecto de la
+    firma a propósito: los valores por defecto de Python se fijan cuando se
+    define la función, así que un `monkeypatch.setattr(history, "SEED_...")`
+    en los tests no tendría ningún efecto (bug real: los tests seguían
+    tragándose el CSV real de 171.850 filas pese al monkeypatch).
+
+    Si el archivo de un CSV no existe, esa tabla se omite y las demás se
+    siembran igual. Es lo que permite a los tests sembrar un histórico
+    controlado sin arrastrar el histórico real por banda/sello.
     """
+    chart_csv = SEED_CHART_CSV if chart_csv is None else chart_csv
+    ms_csv = SEED_MS_CSV if ms_csv is None else ms_csv
+    ms_bandas_csv = SEED_MS_BANDAS_CSV if ms_bandas_csv is None else ms_bandas_csv
+
     chart_df = pd.read_csv(chart_csv)
     ms_df = pd.read_csv(ms_csv)
 
@@ -134,6 +168,16 @@ def seed_historico(chart_csv: Path = SEED_CHART_CSV, ms_csv: Path = SEED_MS_CSV)
                 ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"]
             ].itertuples(index=False, name=None),
         )
+        if Path(ms_bandas_csv).exists():
+            bandas_df = pd.read_csv(ms_bandas_csv)
+            conn.executemany(
+                """INSERT OR IGNORE INTO ms_band_label_weekly
+                   (anio, semana, chart_date, country_code, banda, label_group, pct_streams)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                bandas_df[
+                    ["anio", "semana", "chart_date", "country_code", "banda", "label_group", "pct_streams"]
+                ].itertuples(index=False, name=None),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -226,6 +270,64 @@ def append_semana_ms(df_semana: pd.DataFrame) -> None:
         conn.close()
 
 
+def append_semana_ms_bandas(df_semana: pd.DataFrame) -> None:
+    """Calcula, para la semana que trae `df_semana`, el % de streams de cada
+    sello dentro de cada banda (config.BANDAS_MARKET_SHARE) de cada país, y
+    lo agrega a `ms_band_label_weekly` -- la tabla que alimenta las pestañas
+    individuales de país del Reporte_MS_TOP200.
+
+    Es el mismo cálculo que hacían las sub-tablas "Streams (%) TOP N" de la
+    plantilla original, y el mismo que este proyecto venía haciendo al vuelo
+    desde `chart_track_weekly`. Se pasó a tabla propia para poder sembrar de
+    una vez los años de historia que ya traía el reporte real (2021 en
+    adelante), que track por track no se podían reconstruir.
+    """
+    fecha = _validar_una_sola_semana(df_semana)
+    anio = fecha.year
+    fecha_str = fecha.date().isoformat()
+
+    df = df_semana.copy()
+    if "stream_count" not in df.columns:
+        df["stream_count"] = 0.0
+    df["stream_count"] = df["stream_count"].fillna(0.0)
+
+    conn = _conectar()
+    try:
+        semana = _proxima_semana(conn, "ms_band_label_weekly", anio)
+        filas = []
+        for country_code, grupo_pais in df.groupby("country_code"):
+            for banda in config.BANDAS_MARKET_SHARE:
+                grupo_banda = grupo_pais[grupo_pais["position"] <= banda]
+                total = grupo_banda["stream_count"].sum()
+                streams_por_label = grupo_banda.groupby("label_group")["stream_count"].sum()
+                for label in config.LABEL_GROUPS_MS:
+                    streams_label = float(streams_por_label.get(label, 0.0))
+                    pct = streams_label / total if total else 0.0
+                    filas.append((anio, semana, fecha_str, country_code, banda, label, pct))
+
+        conn.executemany(
+            """INSERT OR REPLACE INTO ms_band_label_weekly
+               (anio, semana, chart_date, country_code, banda, label_group, pct_streams)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            filas,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def cargar_ms_band_label_weekly() -> pd.DataFrame:
+    conn = _conectar()
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM ms_band_label_weekly "
+            "ORDER BY country_code, anio, semana, banda, label_group",
+            conn,
+        )
+    finally:
+        conn.close()
+
+
 def append_semana_tracks(df_semana: pd.DataFrame) -> None:
     """Guarda el detalle track por track (posición, artista, canción, país)
     de la semana que trae `df_semana` en `chart_track_weekly`, continuando
@@ -313,21 +415,38 @@ def cargar_ms_label_weekly() -> pd.DataFrame:
         conn.close()
 
 
+TABLAS_CON_FECHA = ("ms_label_weekly", "chart_track_weekly", "ms_band_label_weekly")
+
+
 def semana_ya_cargada(chart_date) -> bool:
-    """True si esta fecha ya fue guardada antes en el histórico (columna
-    `chart_date` de `ms_label_weekly`).
+    """True si esta fecha ya fue guardada antes en el histórico, mirando la
+    columna `chart_date` de TODAS las tablas que la tienen
+    (ver TABLAS_CON_FECHA).
 
     Existe para que `main.py` pueda correrse dos veces por error con el
     mismo archivo fuente (por ejemplo, si el proceso se interrumpió a la
     mitad) sin duplicar la semana: como `_proxima_semana()` siempre calcula
     "la siguiente" sin mirar si la fecha ya estaba, hace falta este chequeo
-    aparte antes de llamar a `append_semana_chart` / `append_semana_ms`.
+    aparte antes de llamar a los `append_semana_*`.
+
+    Antes solo miraba `ms_label_weekly`, que alcanzaba cuando las tablas se
+    sembraban juntas y avanzaban a la par. Dejó de alcanzar al sembrar
+    `ms_band_label_weekly` hasta la semana 33 mientras `ms_label_weekly`
+    seguía en la 24: una fecha podía estar guardada en una tabla y no en la
+    otra, y volver a cargarla la habría duplicado con otro número de semana.
     """
     fecha_str = pd.Timestamp(chart_date).date().isoformat()
-    ms_df = cargar_ms_label_weekly()
-    if ms_df.empty:
+    conn = _conectar()
+    try:
+        for tabla in TABLAS_CON_FECHA:
+            fila = conn.execute(
+                f"SELECT 1 FROM {tabla} WHERE chart_date = ? LIMIT 1", (fecha_str,)
+            ).fetchone()
+            if fila is not None:
+                return True
         return False
-    return fecha_str in set(ms_df["chart_date"])
+    finally:
+        conn.close()
 
 
 def query_ytd_ms(anio: int, hasta_semana: int) -> pd.DataFrame:
