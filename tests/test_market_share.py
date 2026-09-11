@@ -96,7 +96,7 @@ def test_ytd_recorta_a_las_semanas_disponibles_del_anio_anterior(tmp_path):
     pd.testing.assert_frame_equal(tabla_hasta_2, tabla_hasta_5)
 
 
-def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path, seeds_reales):
+def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path):
     # Validación Paso 6: siembra el histórico REAL de producción (los CSV de
     # data/history/seed/, no datos sintéticos) y compara contra valores
     # tomados a mano de Reporte_MS_MS TOP 200 Spotify YTD 2026 vs 2025 a Sem
@@ -104,9 +104,7 @@ def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path, seeds_rea
     # países x 7 sellos x 2 años = 238 valores) se hizo aparte y coincidió
     # exactamente (diferencia máxima ~1e-16, puro redondeo de floats); este
     # test deja 3 de esos casos reales fijos como regresión rápida.
-    # `seeds_reales` (ver tests/conftest.py) es lo que habilita los CSV
-    # reales de data/history/seed/; por defecto las pruebas están aisladas.
-    history.seed_historico()
+    history.seed_historico()  # sin argumentos = los tres CSV reales de data/history/seed/
 
     casos_reales = [
         # (pais, label_group, pct_YTD_2026, pct_YTD_2025)
@@ -304,4 +302,3 @@ def test_generar_reporte_agrega_la_semana_a_la_cuadricula_por_pais(tmp_path):
     ws = wb["CO"]
     assert ws.cell(row=2, column=3).value.date().isoformat() == "2026-06-18"
     assert ws.cell(row=4, column=3).value == pytest.approx(0.5)  # Universal 1 de 2 tracks, mismos streams
-

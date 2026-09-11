@@ -25,6 +25,16 @@ archivos completos). Cambios respecto al código original:
   canción nueva cuesta una llamada -- las semanas siguientes son rápidas
   porque la mayoría ya está en caché (las canciones se repiten semana a
   semana).
+- Antes de preguntarle a la API por una fecha, se consulta la base externa
+  `data/release_date.db` del proyecto anterior del usuario (opcional, ver
+  config.RELEASE_DATE_DB y _fechas_desde_db_externa). El orden de búsqueda
+  de una fecha queda así: caché propia -> release_date.db -> API.
+
+  OJO con el alcance: esa base está indexada por URI de Spotify, no por
+  ISRC, así que solo ahorra llamadas en el paso "track_id -> fecha" (el
+  barato, que va en lotes de 50). El paso "ISRC -> track_id" (el caro, una
+  llamada por canción nueva) sigue yendo a la API, porque no existe ninguna
+  tabla que relacione ISRC con URI.
 - Reintento automático ante 429 (demasiadas solicitudes), respetando el
   header Retry-After.
 - Si no hay credenciales configuradas, o la API falla por cualquier motivo,
@@ -34,7 +44,9 @@ archivos completos). Cambios respecto al código original:
   fallar. La próxima corrida lo vuelve a intentar.
 """
 import os
+import sqlite3
 import time
+from pathlib import Path
 
 import pandas as pd
 
@@ -91,6 +103,66 @@ def _texto_o_none(valor):
     if not texto or texto.lower() in {"nan", "none", "nat"}:
         return None
     return texto
+
+
+def _fechas_desde_db_externa(track_ids: list) -> dict:
+    """Busca las fechas de lanzamiento de esos track_ids en la base externa
+    `release_date.db` (ver config.RELEASE_DATE_DB) y devuelve
+    {track_id: fecha} solo con los que encontró.
+
+    Esa base viene del proyecto anterior del usuario y tiene la tabla
+    `track (uri, release_date)`. OJO con lo que NO es: está indexada por
+    URI de Spotify, no por ISRC, así que solo sirve para el segundo paso
+    (track_id -> fecha). El primero (ISRC -> track_id) sigue necesitando la
+    API, porque no hay ninguna tabla que relacione ISRC con URI.
+
+    Es opcional y nunca puede tumbar el reporte: si el archivo no existe, si
+    no tiene la tabla `track`, o si está corrupto, devuelve {} y el flujo
+    sigue contra la API como siempre.
+
+    Se abre en modo SOLO LECTURA a propósito (`mode=ro`): es un archivo del
+    usuario y este proyecto no le escribe nada.
+    """
+    ruta = Path(config.RELEASE_DATE_DB)
+    if not track_ids or not ruta.exists():
+        return {}
+
+    # Los ids pueden estar guardados pelados ("4cOdK2wGLET...") o con el
+    # prefijo completo ("spotify:track:4cOdK2wGLET..."). release_date_management.py
+    # los guarda pelados (recorta con uri[14:]), pero se buscan las dos
+    # formas por si alguna fila quedó con el prefijo.
+    formas = {}
+    for tid in track_ids:
+        formas[tid] = tid
+        formas[f"spotify:track:{tid}"] = tid
+
+    encontradas = {}
+    try:
+        conn = sqlite3.connect(f"file:{ruta}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        claves = list(formas)
+        # SQLite limita la cantidad de parámetros por consulta (~999).
+        for i in range(0, len(claves), 500):
+            lote = claves[i:i + 500]
+            marcador = ",".join("?" * len(lote))
+            filas = conn.execute(
+                f"SELECT uri, release_date FROM track WHERE uri IN ({marcador})", lote
+            ).fetchall()
+            for uri, fecha in filas:
+                fecha = _texto_o_none(fecha)
+                if fecha is not None:
+                    encontradas[formas[uri]] = fecha
+    except sqlite3.Error as e:
+        print(
+            f"Aviso: no se pudo leer {ruta.name} ({e}). Se resuelven las fechas "
+            "contra la API de Spotify, como antes."
+        )
+        return {}
+    finally:
+        conn.close()
+    return encontradas
 
 
 def _crear_tablas(conn) -> None:
@@ -246,6 +318,25 @@ def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateCli
             }
 
         track_ids_faltantes = [tid for tid in track_ids_unicos if tid not in fecha_por_track_id]
+
+        # Antes de gastar una llamada a la API, se mira la base externa
+        # release_date.db del proyecto anterior (ver _fechas_desde_db_externa).
+        # Lo que salga de ahí se copia a nuestra caché, así queda resuelto
+        # para siempre aunque después el archivo externo no esté.
+        if track_ids_faltantes:
+            desde_db_externa = _fechas_desde_db_externa(track_ids_faltantes)
+            if desde_db_externa:
+                fecha_por_track_id.update(desde_db_externa)
+                conn.executemany(
+                    "INSERT OR REPLACE INTO spotify_release_date_cache (track_id, release_date) VALUES (?, ?)",
+                    list(desde_db_externa.items()),
+                )
+                conn.commit()
+                track_ids_faltantes = [
+                    tid for tid in track_ids_faltantes if tid not in desde_db_externa
+                ]
+
+        # Solo lo que no estaba ni en la caché ni en la base externa va a la API.
         if track_ids_faltantes:
             cliente = cliente or SpotifyReleaseDateClient()
             nuevas_fechas = cliente.fechas_de_lanzamiento(track_ids_faltantes)

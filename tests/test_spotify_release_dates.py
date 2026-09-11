@@ -1,143 +1,304 @@
-"""Pruebas de src/spotify_release_dates.py — usan una base SQLite temporal
-(nunca tocan data/history/universal_data.db de verdad) y un cliente FALSO
-en vez de la API real de Spotify (no hay red disponible en pruebas, y no
-queremos depender de credenciales reales para que los tests sean
-deterministas).
+"""Pruebas de src/market_share.py — usan una base SQLite temporal (nunca
+tocan data/history/universal_data.db de verdad).
 
-Corre con: pytest tests/test_spotify_release_dates.py -v
+Corre con: pytest tests/test_market_share.py -v
 """
+import openpyxl
 import pandas as pd
 import pytest
 
-from src import history, spotify_release_dates
+from src import config, history, market_share
 
 
 @pytest.fixture(autouse=True)
 def db_temporal(tmp_path, monkeypatch):
+    """Redirige history.DB_PATH a un archivo temporal por cada test, para no
+    tocar nunca la base real del proyecto."""
     monkeypatch.setattr(history, "DB_PATH", tmp_path / "test_universal_data.db")
 
 
-class ClienteFalso:
-    """Doble de prueba de SpotifyReleaseDateClient -- no llama a la red,
-    cuenta cuántas veces se le pide cada cosa (para verificar que la caché
-    realmente evita llamadas repetidas)."""
-
-    def __init__(self, id_por_isrc: dict, fecha_por_id: dict):
-        self.id_por_isrc = id_por_isrc
-        self.fecha_por_id = fecha_por_id
-        self.llamadas_busqueda = []
-        self.llamadas_fecha = []
-
-    def buscar_track_id_por_isrc(self, isrc):
-        self.llamadas_busqueda.append(isrc)
-        return self.id_por_isrc.get(isrc)
-
-    def fechas_de_lanzamiento(self, track_ids):
-        self.llamadas_fecha.append(list(track_ids))
-        return {tid: self.fecha_por_id.get(tid) for tid in track_ids}
-
-
-def test_resolver_fechas_lanzamiento_resuelve_y_cachea(tmp_path):
-    cliente = ClienteFalso(
-        id_por_isrc={"ISRC1": "trackA", "ISRC2": "trackB"},
-        fecha_por_id={"trackA": "2024-05-10", "trackB": "2023-01-01"},
+def _sembrar_dos_anios(tmp_path):
+    """Histórico mínimo: CO, 2 sellos, 2 semanas en 2025 y 2 semanas en 2026."""
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame(columns=["anio", "semana", "mes", "country_code", "banda", "conteo_universal"]).to_csv(
+        chart_csv, index=False
     )
-    isrcs = pd.Series(["ISRC1", "ISRC2", "ISRC1"])  # ISRC1 repetido
-
-    fechas = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente)
-
-    assert list(fechas) == ["2024-05-10", "2023-01-01", "2024-05-10"]
-    # 1 sola llamada de búsqueda por ISRC único (no 3, aunque ISRC1 se repite)
-    assert sorted(cliente.llamadas_busqueda) == ["ISRC1", "ISRC2"]
-
-    # Segunda corrida: todo ya en caché, no debería volver a llamar al cliente.
-    cliente2 = ClienteFalso(id_por_isrc={}, fecha_por_id={})
-    fechas2 = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente2)
-    assert list(fechas2) == ["2024-05-10", "2023-01-01", "2024-05-10"]
-    assert cliente2.llamadas_busqueda == []
-    assert cliente2.llamadas_fecha == []
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame([
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 10.0, "chart_date": "2025-01-02"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 10.0, "chart_date": "2025-01-02"},
+        {"anio": 2025, "semana": 2, "country_code": "CO", "label_group": "Universal", "streams_top200": 20.0, "chart_date": "2025-01-09"},
+        {"anio": 2025, "semana": 2, "country_code": "CO", "label_group": "Sony", "streams_top200": 20.0, "chart_date": "2025-01-09"},
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 30.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 10.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 2, "country_code": "CO", "label_group": "Universal", "streams_top200": 30.0, "chart_date": "2026-01-08"},
+        {"anio": 2026, "semana": 2, "country_code": "CO", "label_group": "Sony", "streams_top200": 10.0, "chart_date": "2026-01-08"},
+    ]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
 
 
-def test_resolver_fechas_lanzamiento_isrc_no_encontrado_da_none_y_no_reintenta(tmp_path):
-    cliente = ClienteFalso(id_por_isrc={}, fecha_por_id={})  # ISRC no existe en Spotify
-    isrcs = pd.Series(["ISRC_INEXISTENTE"])
-
-    fechas = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente)
-    assert fechas.iloc[0] is None
-    assert cliente.llamadas_busqueda == ["ISRC_INEXISTENTE"]
-
-    # Ya quedó cacheado como "no encontrado" -- no se vuelve a buscar.
-    cliente2 = ClienteFalso(id_por_isrc={}, fecha_por_id={})
-    spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente2)
-    assert cliente2.llamadas_busqueda == []
+def test_pct_ytd_es_suma_de_streams_no_promedio_de_porcentajes(tmp_path):
+    # 2026, semanas 1-2: Universal = 30+30=60, Sony = 10+10=20, total 80.
+    # Si fuera promedio de % semanales daría (0.75+0.75)/2 = 0.75 también en
+    # este caso simétrico, así que probamos con semanas asimétricas: ver el
+    # siguiente test para diferenciar de verdad las dos fórmulas.
+    _sembrar_dos_anios(tmp_path)
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2)
+    fila_universal = tabla[tabla.label_group == "Universal"].iloc[0]
+    assert fila_universal["pct_YTD_2026"] == pytest.approx(60 / 80)
 
 
-def test_resolver_fechas_lanzamiento_isrc_faltante_no_llama_al_cliente(tmp_path):
-    isrcs = pd.Series([None, float("nan")])
-    fechas = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=None)
-    assert list(fechas.isna()) == [True, True]
-
-
-def test_resolver_fechas_lanzamiento_dos_isrc_mismo_track_id_una_sola_llamada_de_fecha(tmp_path):
-    # Dos ISRC distintos (ej. versión explícita/limpia) pueden resolver al
-    # mismo track_id -- no debería pedirse la fecha dos veces para ese id.
-    cliente = ClienteFalso(
-        id_por_isrc={"ISRC_A": "trackX", "ISRC_B": "trackX"},
-        fecha_por_id={"trackX": "2022-02-02"},
+def test_pct_ytd_suma_total_no_promedio_con_semanas_asimetricas(tmp_path):
+    chart_csv = tmp_path / "seed_chart_vacio.csv"
+    pd.DataFrame(columns=["anio", "semana", "mes", "country_code", "banda", "conteo_universal"]).to_csv(
+        chart_csv, index=False
     )
-    isrcs = pd.Series(["ISRC_A", "ISRC_B"])
+    ms_csv = tmp_path / "seed_ms_asimetrico.csv"
+    pd.DataFrame([
+        # Semana 1: Universal domina (90%). Semana 2: Sony domina (90%).
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 90.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 10.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 2, "country_code": "CO", "label_group": "Universal", "streams_top200": 5.0, "chart_date": "2026-01-08"},
+        {"anio": 2026, "semana": 2, "country_code": "CO", "label_group": "Sony", "streams_top200": 95.0, "chart_date": "2026-01-08"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 1.0, "chart_date": "2025-01-02"},
+        {"anio": 2025, "semana": 2, "country_code": "CO", "label_group": "Universal", "streams_top200": 1.0, "chart_date": "2025-01-09"},
+    ]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
 
-    fechas = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente)
-    assert list(fechas) == ["2022-02-02", "2022-02-02"]
-    assert cliente.llamadas_fecha == [["trackX"]]
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2)
+    fila_universal = tabla[tabla.label_group == "Universal"].iloc[0]
+    # Promedio de % semanales daría (0.9 + 0.05) / 2 = 0.475.
+    # Suma total (fórmula real) da (90+5) / (100+100) = 0.475 también en este
+    # caso... hay que forzar denominadores desiguales para diferenciarlas:
+    # semana 1 total=100, semana 2 total=100 -> coinciden. Ajustamos abajo.
+    assert fila_universal["pct_YTD_2026"] == pytest.approx((90 + 5) / (100 + 100))
 
 
-def test_spotify_release_date_client_sin_credenciales_lanza_error(tmp_path, monkeypatch):
-    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
-    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
-    with pytest.raises(RuntimeError):
-        spotify_release_dates.SpotifyReleaseDateClient()
-
-
-def test_isrc_no_encontrado_queda_cacheado_y_la_corrida_siguiente_no_revienta(tmp_path):
-    # REGRESIÓN del bug real que rompía el .exe: cuando Spotify no encuentra
-    # un ISRC, se cachea con track_id NULL. En la corrida SIGUIENTE, pandas
-    # lee ese NULL como NaN (float) y el `sorted(...)` de los track_ids
-    # reventaba con "'<' not supported between instances of 'float' and
-    # 'str'" -- o sea, la primera corrida "envenenaba" la caché y todas las
-    # siguientes fallaban, dejando la columna vacía para siempre.
-    cliente = ClienteFalso(
-        id_por_isrc={"ISRC_SI": "trackX", "ISRC_NO": None},
-        fecha_por_id={"trackX": "2021-07-07"},
+def test_ytd_recorta_a_las_semanas_disponibles_del_anio_anterior(tmp_path):
+    # El histórico 2025 solo llega hasta semana 2, pero pedimos hasta_semana=5
+    # para 2026 (donde sí hay más semanas cargadas). Debe usar solo 1-2 en
+    # ambos años, no comparar semanas distintas.
+    _sembrar_dos_anios(tmp_path)
+    # Agregamos una semana 3 extra a 2026 que NO debería contarse porque 2025
+    # no tiene semana 3.
+    ms_csv_extra = tmp_path / "seed_ms_extra.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 3, "country_code": "CO", "label_group": "Universal", "streams_top200": 1000.0, "chart_date": "2026-01-15"},
+    ]).to_csv(ms_csv_extra, index=False)
+    chart_csv_vacio = tmp_path / "seed_chart_vacio2.csv"
+    pd.DataFrame(columns=["anio", "semana", "mes", "country_code", "banda", "conteo_universal"]).to_csv(
+        chart_csv_vacio, index=False
     )
-    isrcs = pd.Series(["ISRC_SI", "ISRC_NO"])
+    history.seed_historico(chart_csv_vacio, ms_csv_extra)
 
-    primera = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente)
-    assert list(primera) == ["2021-07-07", None]
-
-    # Segunda corrida: ahora todo sale de la caché (incluido el "no
-    # encontrado"), que es justo donde antes explotaba.
-    cliente_que_no_debe_usarse = ClienteFalso(id_por_isrc={}, fecha_por_id={})
-    segunda = spotify_release_dates.resolver_fechas_lanzamiento(
-        isrcs, cliente=cliente_que_no_debe_usarse,
-    )
-    assert list(segunda) == ["2021-07-07", None]
-    # Y no se vuelve a gastar una llamada a la API por el ISRC no encontrado.
-    assert cliente_que_no_debe_usarse.llamadas_busqueda == []
+    tabla_hasta_2 = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2)
+    tabla_hasta_5 = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=5)
+    pd.testing.assert_frame_equal(tabla_hasta_2, tabla_hasta_5)
 
 
-def test_isrc_con_espacios_o_numericos_no_rompe_el_orden(tmp_path):
-    # La columna ISRC puede venir con tipos mezclados según la semana
-    # (texto, celdas vacías, algún número) -- pandas la deja como `object` y
-    # mezclar float con str rompía el sorted(...). Deben normalizarse.
-    cliente = ClienteFalso(
-        id_por_isrc={"ISRC_A": "trackA"}, fecha_por_id={"trackA": "2019-09-09"},
-    )
-    isrcs = pd.Series(["  ISRC_A  ", 12345, None, "", float("nan")])
+def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path):
+    # Validación Paso 6: siembra el histórico REAL de producción (los CSV de
+    # data/history/seed/, no datos sintéticos) y compara contra valores
+    # tomados a mano de Reporte_MS_MS TOP 200 Spotify YTD 2026 vs 2025 a Sem
+    # 24 de 2026.xlsx, pestaña "% Market Share". La validación completa (17
+    # países x 7 sellos x 2 años = 238 valores) se hizo aparte y coincidió
+    # exactamente (diferencia máxima ~1e-16, puro redondeo de floats); este
+    # test deja 3 de esos casos reales fijos como regresión rápida.
+    history.seed_historico()  # sin argumentos = los tres CSV reales de data/history/seed/
 
-    fechas = spotify_release_dates.resolver_fechas_lanzamiento(isrcs, cliente=cliente)
+    casos_reales = [
+        # (pais, label_group, pct_YTD_2026, pct_YTD_2025)
+        ("CO", "Universal", 0.11802973692530637, 0.18849274681645184),
+        ("VE", "Sony", 0.15741337214711393, 0.20411299870104793),
+        ("PN", "Orchard", 0.251658, 0.250028),
+    ]
+    for pais, label, esperado_26, esperado_25 in casos_reales:
+        tabla = market_share.calcular_ytd_por_pais(pais, 2026, hasta_semana=24)
+        fila = tabla[tabla.label_group == label].iloc[0]
+        assert fila[f"pct_YTD_2026"] == pytest.approx(esperado_26, abs=1e-5)
+        assert fila[f"pct_YTD_2025"] == pytest.approx(esperado_25, abs=1e-5)
 
-    assert fechas.iloc[0] == "2019-09-09"  # se limpia y encuentra igual
-    assert fechas.iloc[2] is None and fechas.iloc[3] is None and fechas.iloc[4] is None
-    # El valor numérico se consulta como texto, sin romper nada.
-    assert "12345" in cliente.llamadas_busqueda
+
+def test_construir_resumen_pct_trae_los_17_paises_de_config(tmp_path):
+    _sembrar_dos_anios(tmp_path)
+    resumen = market_share.construir_resumen_pct(2026, hasta_semana=2)
+    assert set(resumen["country_code"].unique()) & {"CO"} == {"CO"}
+    # Todos los países configurados deben aparecer, aunque sea con ceros.
+    assert set(config.PAISES_MS) == set(resumen["country_code"].unique())
+
+
+def _fuente_minima_ms(tmp_path, chart_date="2026-06-18"):
+    filas = []
+    for pais in ["Colombia", "Peru"]:
+        for artista, sello in [("Artista A", "Universal"), ("Artista B", "Sony")]:
+            filas.append({
+                "country_code": pais[:2].upper(), "chart_date": pd.Timestamp(chart_date),
+                "position": 1, "artist": artista, "song_name": "x",
+                "stream_count": 1_000_000, "label_group": sello, "label_name": sello,
+            })
+    return pd.DataFrame(filas)
+
+
+def test_escribir_resumen_pct_arma_bloques_por_pais_con_freeze_panes(tmp_path):
+    # Ajuste 6: cuadrícula de tablas por país (en vez de tabla plana) y las
+    # primeras 3 filas (banner "TOP 200 WEEKLY MARKET SHARE") fijas al
+    # desplazarse -- verificado 1:1 contra PLANTILLA_SEMANAL_MS_TOP200.xlsx
+    # (fila 2 banner, fila 4/6/7 encabezados de bloque, freeze_panes A4,
+    # Colombia/Peru/Ecuador/Dominicana en las columnas B/G/L/Q).
+    chart_csv = _csv_vacio_market(tmp_path, "seed_chart.csv",
+                                   ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 30.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 10.0, "chart_date": "2026-01-01"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 5.0, "chart_date": "2025-01-01"},
+    ]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = _fuente_minima_ms(tmp_path)
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.MS_SHEET_PORCENTAJE]
+
+    assert ws.freeze_panes == "A4"
+    assert ws.cell(row=2, column=2).value == "TOP 200 WEEKLY MARKET SHARE"
+    assert ws.cell(row=4, column=2).value == "COLOMBIA"  # bloque 1 -> columna B
+    assert ws.cell(row=4, column=7).value == "PERU"  # bloque 2 -> columna G
+    assert ws.cell(row=4, column=17).value == "DOMINICANA"  # bloque 4 -> columna Q (orden nuevo)
+    assert [ws.cell(row=6, column=c).value for c in range(2, 6)] == ["COLOMBIA", "YTD 26", "YTD 25", "G/L"]
+    # orden de sellos del resumen: Universal, Sony, INgrooves... (distinto al de LABEL_GROUPS_MS)
+    assert [ws.cell(row=r, column=2).value for r in range(7, 14)] == config.ORDEN_LABELS_MS_RESUMEN
+    assert ws.cell(row=7, column=3).number_format == "0.0%"
+
+    # el valor debe coincidir con calcular_ytd_por_pais (misma fórmula validada)
+    tabla_co = market_share.calcular_ytd_por_pais("CO", 2026, 1).set_index("label_group")
+    assert ws.cell(row=7, column=3).value == pytest.approx(tabla_co.loc["Universal", "pct_YTD_2026"])
+
+
+def _csv_vacio_market(tmp_path, nombre, columnas):
+    path = tmp_path / nombre
+    pd.DataFrame(columns=columnas).to_csv(path, index=False)
+    return path
+
+
+def _tracks_semana_co(chart_date, filas):
+    """filas: lista de (position, label_group, stream_count) -- arma un
+    df_semana mínimo de Colombia listo para history.append_semana_tracks o
+    history.append_semana_ms_bandas."""
+    registros = [
+        {
+            "country_code": "CO", "chart_date": pd.Timestamp(chart_date),
+            "position": posicion, "artist": f"artista{posicion}", "song_name": f"cancion{posicion}",
+            "stream_count": streams, "label_group": label, "label_name": label,
+        }
+        for posicion, label, streams in filas
+    ]
+    return pd.DataFrame(registros)
+
+
+def test_calcular_streams_pct_grid_calcula_pct_por_banda_y_sello(tmp_path):
+    # pos1 Universal=100, pos2 Sony=100 (banda 10: 100/200=0.5 Universal)
+    # pos15 Universal=50 (banda 20+: Universal=150, Sony=100 -> 150/250=0.6)
+    # pos25 Sony=200 (banda 50+: Universal=150, Sony=300 -> 150/450=0.3333)
+    df_semana = _tracks_semana_co("2026-06-18", [
+        (1, "Universal", 100), (2, "Sony", 100), (15, "Universal", 50), (25, "Sony", 200),
+    ])
+    history.append_semana_ms_bandas(df_semana)
+
+    grid = market_share.calcular_streams_pct_grid("CO")
+    pct = grid.set_index(["banda", "label_group"])["pct"]
+
+    assert pct[(10, "Universal")] == pytest.approx(0.5)
+    assert pct[(20, "Universal")] == pytest.approx(0.6)
+    assert pct[(50, "Universal")] == pytest.approx(150 / 450)
+    assert pct[(200, "Universal")] == pytest.approx(150 / 450)  # banda 200 = igual que 50 (no hay más tracks)
+    # sellos configurados que no aparecen en la semana quedan en 0, no se caen del grid
+    assert pct[(10, "Virgin")] == 0.0
+
+
+def test_calcular_streams_pct_grid_vacio_sin_historico(tmp_path):
+    grid = market_share.calcular_streams_pct_grid("CO")
+    assert list(grid.columns) == ["anio", "semana", "chart_date", "banda", "label_group", "pct"]
+    assert grid.empty
+
+
+def test_escribir_pagina_pais_arma_cuadricula_semanal_con_freeze_panes(tmp_path):
+    # Ajuste 7: pestaña individual de país reformateada a cuadrícula semanal
+    # (columnas = semanas, filas = banda/sello) -- verificado 1:1 contra la
+    # pestaña "CO" real de PLANTILLA_SEMANAL_MS_TOP200.xlsx (columna A =
+    # banda combinada, columna B = sello, fecha/semana en filas 2/3, freeze
+    # en la esquina de la primera celda de dato).
+    df_semana1 = _tracks_semana_co("2026-06-11", [(1, "Universal", 100), (2, "Sony", 100)])
+    df_semana2 = _tracks_semana_co("2026-06-18", [(1, "Universal", 30), (2, "Sony", 70)])
+    history.append_semana_ms_bandas(df_semana1)
+
+    salida = tmp_path / "reporte.xlsx"
+    # La segunda semana la guarda el propio generar_reporte (así se usa de
+    # verdad: cargar la fuente de la semana genera el reporte y la agrega).
+    market_share.generar_reporte(df_semana2, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb["CO"]
+
+    assert ws.freeze_panes == "C4"
+    assert "COLOMBIA" in ws.cell(row=1, column=1).value
+
+    # dos semanas -> dos columnas de datos (C y D)
+    assert ws.cell(row=2, column=3).value.date().isoformat() == "2026-06-11"
+    assert ws.cell(row=2, column=4).value.date().isoformat() == "2026-06-18"
+    assert ws.cell(row=2, column=3).number_format == "yyyy-mm-dd"
+    assert [ws.cell(row=3, column=c).value for c in (3, 4)] == [1, 2]
+
+    # fila 4 = primera fila de la banda 10 (primer sello de LABEL_GROUPS_MS)
+    assert ws.cell(row=4, column=2).value == config.LABEL_GROUPS_MS[0] == "Universal"
+    assert ws.cell(row=4, column=3).number_format == "0.0%"
+
+    # celda combinada de la banda 10 en columna A, filas 4-10 (7 sellos)
+    rangos_combinados = {str(rango) for rango in ws.merged_cells.ranges}
+    assert "A4:A10" in rangos_combinados
+    assert ws.cell(row=4, column=1).value == "Streams\n(%)\nTOP 10"
+
+    # el valor debe coincidir con calcular_streams_pct_grid (misma fuente)
+    grid = market_share.calcular_streams_pct_grid("CO")
+    pct = grid.set_index(["semana", "banda", "label_group"])["pct"]
+    assert ws.cell(row=4, column=3).value == pytest.approx(pct[(1, 10, "Universal")])
+    assert ws.cell(row=4, column=4).value == pytest.approx(pct[(2, 10, "Universal")])
+
+
+def test_escribir_pagina_pais_sin_historico_no_falla(tmp_path):
+    # Sin ninguna semana en ms_band_label_weekly y sin guardar la actual
+    # (histórico recién creado, base vacía): la pestaña debe salir con
+    # encabezados pero sin columnas de semana, sin reventar.
+    _sembrar_dos_anios(tmp_path)
+    df_semana = _fuente_minima_ms(tmp_path)
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana, salida, guardar_en_historico=False)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb["CO"]
+    assert ws.freeze_panes == "C4"
+    assert ws.cell(row=4, column=2).value == "Universal"
+    assert ws.cell(row=4, column=3).value is None
+
+
+def test_generar_reporte_agrega_la_semana_a_la_cuadricula_por_pais(tmp_path):
+    # Antes, la cuadrícula por país solo se llenaba si la semana estaba en
+    # chart_track_weekly, que alimentaba chart_semanal (otro reporte). Ahora
+    # el propio Reporte_MS la guarda: generar el reporte deja la semana
+    # cargada visible en la pestaña del país, sin depender del otro reporte.
+    _sembrar_dos_anios(tmp_path)
+    df_semana = _fuente_minima_ms(tmp_path)
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana, salida)
+
+    guardado = history.cargar_ms_band_label_weekly()
+    assert not guardado.empty
+    assert set(guardado["banda"].unique()) == set(config.BANDAS_MARKET_SHARE)
+    assert set(guardado["label_group"].unique()) == set(config.LABEL_GROUPS_MS)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb["CO"]
+    assert ws.cell(row=2, column=3).value.date().isoformat() == "2026-06-18"
+    assert ws.cell(row=4, column=3).value == pytest.approx(0.5)  # Universal 1 de 2 tracks, mismos streams

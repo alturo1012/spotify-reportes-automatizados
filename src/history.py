@@ -132,43 +132,51 @@ def seed_historico(
     reales. Es seguro correrlo más de una vez: usa INSERT OR IGNORE, así que
     no duplica filas si ya estaban cargadas.
 
-    Cada parámetro en None usa el CSV de siembra que le corresponde
-    (SEED_*_CSV). Se resuelven ACÁ ADENTRO y no como valor por defecto de la
-    firma a propósito: los valores por defecto de Python se fijan cuando se
-    define la función, así que un `monkeypatch.setattr(history, "SEED_...")`
-    en los tests no tendría ningún efecto (bug real: los tests seguían
-    tragándose el CSV real de 171.850 filas pese al monkeypatch).
+    La regla de los parámetros es "todo o exactamente lo que nombres":
 
-    Si el archivo de un CSV no existe, esa tabla se omite y las demás se
-    siembran igual. Es lo que permite a los tests sembrar un histórico
-    controlado sin arrastrar el histórico real por banda/sello.
+    - Sin ningún argumento (el uso normal, `scripts/sembrar_historico.py`):
+      siembra las TRES tablas desde los CSV reales de `data/history/seed/`.
+    - Nombrando alguno: siembra SOLO los que nombraste, y omite los demás.
+      `seed_historico(chart_csv, ms_csv)` siembra esas dos tablas y deja
+      `ms_band_label_weekly` vacía.
+
+    Esa regla existe por un problema real: cuando los no nombrados caían al
+    CSV real por defecto, cualquier prueba que sembrara un histórico chico
+    de dos tablas se tragaba además el histórico real por banda/sello
+    (171.850 filas) sin avisar, y fallaba de una forma imposible de
+    entender (`semana_ya_cargada("2026-01-08")` devolvía True porque esa
+    fecha existe de verdad en el histórico real). Así, quien pide un
+    histórico controlado obtiene exactamente eso.
+
+    Es seguro correrlo más de una vez: usa INSERT OR IGNORE.
     """
-    chart_csv = SEED_CHART_CSV if chart_csv is None else chart_csv
-    ms_csv = SEED_MS_CSV if ms_csv is None else ms_csv
-    ms_bandas_csv = SEED_MS_BANDAS_CSV if ms_bandas_csv is None else ms_bandas_csv
+    if chart_csv is None and ms_csv is None and ms_bandas_csv is None:
+        chart_csv, ms_csv, ms_bandas_csv = SEED_CHART_CSV, SEED_MS_CSV, SEED_MS_BANDAS_CSV
 
-    chart_df = pd.read_csv(chart_csv)
-    ms_df = pd.read_csv(ms_csv)
+    chart_df = pd.read_csv(chart_csv) if chart_csv is not None else None
+    ms_df = pd.read_csv(ms_csv) if ms_csv is not None else None
 
     conn = _conectar()
     try:
-        conn.executemany(
-            """INSERT OR IGNORE INTO chart_band_weekly
-               (anio, semana, mes, country_code, banda, conteo_universal)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            chart_df[
-                ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"]
-            ].itertuples(index=False, name=None),
-        )
-        conn.executemany(
-            """INSERT OR IGNORE INTO ms_label_weekly
-               (anio, semana, country_code, label_group, streams_top200, chart_date)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ms_df[
-                ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"]
-            ].itertuples(index=False, name=None),
-        )
-        if Path(ms_bandas_csv).exists():
+        if chart_df is not None:
+            conn.executemany(
+                """INSERT OR IGNORE INTO chart_band_weekly
+                   (anio, semana, mes, country_code, banda, conteo_universal)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                chart_df[
+                    ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"]
+                ].itertuples(index=False, name=None),
+            )
+        if ms_df is not None:
+            conn.executemany(
+                """INSERT OR IGNORE INTO ms_label_weekly
+                   (anio, semana, country_code, label_group, streams_top200, chart_date)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ms_df[
+                    ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"]
+                ].itertuples(index=False, name=None),
+            )
+        if ms_bandas_csv is not None:
             bandas_df = pd.read_csv(ms_bandas_csv)
             conn.executemany(
                 """INSERT OR IGNORE INTO ms_band_label_weekly

@@ -31,6 +31,20 @@ ROOT_DIR = _calcular_root_dir()
 RAW_DIR = ROOT_DIR / "data" / "raw"
 OUTPUT_DIR = ROOT_DIR / "data" / "output"
 
+# Base de datos EXTERNA de fechas de lanzamiento, traída del proyecto
+# anterior del usuario (la que maneja release_date_management.py). Tiene la
+# tabla `track (uri, release_date)`, donde `uri` es el id de track de
+# Spotify sin el prefijo "spotify:track:".
+#
+# Se consulta ANTES de preguntarle a la API (ver
+# spotify_release_dates.resolver_fechas_lanzamiento): si la fecha ya está
+# ahí, nos ahorramos la llamada. Es OPCIONAL: si el archivo no está, todo
+# sigue funcionando igual, solo que resolviendo todo contra la API.
+#
+# Se abre siempre en modo solo lectura -- es un archivo del usuario, este
+# proyecto no le escribe nada.
+RELEASE_DATE_DB = ROOT_DIR / "data" / "release_date.db"
+
 # Columnas tal cual vienen en la hoja "Consulta1" de la fuente BQ
 SOURCE_COLUMNS = [
     "country",
