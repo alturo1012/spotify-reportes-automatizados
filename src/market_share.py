@@ -12,6 +12,12 @@ Fórmula real (verificada contra PLANTILLA_SEMANAL_MS_TOP200.xlsx, filas
 Se compara el mismo número de semanas (1..N) entre el año en curso y el
 año anterior. NO es un promedio de porcentajes semanales.
 
+OJO: esa fórmula necesita los streams crudos de todas las semanas 1..N, y
+el reporte oficial dejó de traerlos (la plantilla de trabajo que los tenía
+ya no existe). Cuando faltan, `calcular_ytd_por_pais` cae a una
+aproximación -- el promedio del % semanal -- que se desvía 0,1 puntos en
+promedio. Ver su docstring para el detalle y las mediciones.
+
 La pestaña resumen "% Market Share" se escribe como una cuadrícula de
 tablas, una por país (4 por fila de bloques), replicando el formato visual
 de PLANTILLA_SEMANAL_MS_TOP200.xlsx -- ver _escribir_resumen_pct.
@@ -42,8 +48,55 @@ from openpyxl.utils import get_column_letter
 from . import config, history
 
 
+def _semanas_completas(streams_pais_anio, hasta_semana: int) -> bool:
+    """True si `ms_label_weekly` tiene TODAS las semanas 1..N de ese año.
+
+    Es lo que decide si el YTD se puede calcular con la fórmula exacta (ver
+    calcular_ytd_por_pais). Con un hueco en el medio, sumar los streams que
+    sí están daría un número mal: sería el share de un subconjunto de
+    semanas, no del período 1..N.
+    """
+    if hasta_semana <= 0 or streams_pais_anio.empty:
+        return False
+    presentes = set(streams_pais_anio["semana"].astype(int))
+    return set(range(1, hasta_semana + 1)).issubset(presentes)
+
+
+def _ytd_exacto(streams_actual_df, streams_anterior_df) -> tuple:
+    """Fórmula exacta: suma de streams del sello / suma de los 7 sellos."""
+    streams_actual = streams_actual_df.groupby("label_group")["streams_top200"].sum()
+    streams_anterior = streams_anterior_df.groupby("label_group")["streams_top200"].sum()
+    total_actual = streams_actual.sum()
+    total_anterior = streams_anterior.sum()
+    return (
+        {lab: float(streams_actual.get(lab, 0.0)) / total_actual if total_actual else 0.0
+         for lab in config.LABEL_GROUPS_MS},
+        {lab: float(streams_anterior.get(lab, 0.0)) / total_anterior if total_anterior else 0.0
+         for lab in config.LABEL_GROUPS_MS},
+    )
+
+
+def _ytd_promedio_semanal(bandas_pais, anio: int, hasta_semana: int) -> dict:
+    """Aproximación: promedio del % semanal de la banda 200, semanas 1..N.
+
+    Se usa cuando no hay streams crudos para todo el período (ver
+    calcular_ytd_por_pais). Equivale a la fórmula exacta suponiendo que
+    todas las semanas pesan lo mismo.
+    """
+    del_anio = bandas_pais[
+        (bandas_pais["anio"] == anio)
+        & (bandas_pais["banda"] == 200)
+        & (bandas_pais["semana"] <= hasta_semana)
+    ]
+    if del_anio.empty:
+        return {lab: 0.0 for lab in config.LABEL_GROUPS_MS}
+    promedio = del_anio.groupby("label_group")["pct_streams"].mean()
+    return {lab: float(promedio.get(lab, 0.0)) for lab in config.LABEL_GROUPS_MS}
+
+
 def calcular_ytd_por_pais(
-    country_code: str, anio_actual: int, hasta_semana: int
+    country_code: str, anio_actual: int, hasta_semana: int,
+    streams: pd.DataFrame = None, bandas: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """% Market Share YTD de un país: un DataFrame con una fila por sello
     (en el orden de config.LABEL_GROUPS_MS), comparando anio_actual vs.
@@ -53,38 +106,80 @@ def calcular_ytd_por_pais(
     Esto evita comparar, por ejemplo, 25 semanas de 2026 contra solo 24 de
     2025 si el histórico del año anterior no llega tan lejos todavía — la
     comparación YTD deja de tener sentido si no son las mismas semanas.
+
+    DOS FORMAS DE CALCULARLO, y se elige sola según los datos que haya:
+
+    1. EXACTA (la de siempre, validada contra 238 valores reales del reporte
+       oficial sin una sola diferencia): suma los streams del sello en las
+       semanas 1..N y los divide entre la suma de los 7 sellos. Requiere
+       tener los streams crudos de TODAS esas semanas en `ms_label_weekly`.
+
+    2. PROMEDIO DEL % SEMANAL: promedia el porcentaje de la banda 200 de
+       cada semana, tomándolo de `ms_band_label_weekly`. Se usa cuando
+       faltan streams crudos de alguna semana del período.
+
+    Por qué hizo falta la segunda: el reporte oficial dejó de traer los
+    streams crudos por sello (la plantilla de trabajo que los tenía ya no
+    existe), así que el histórico de streams se quedó en la semana 24 de
+    2026 mientras el de porcentajes llega a la 33. Sin la aproximación, el
+    YTD compararía 24 semanas contra 24 en un reporte que dice "a Sem 33".
+
+    Qué tan buena es: medido sobre las semanas 1-24 de 2026, donde sí se
+    pueden calcular las dos, la diferencia es de 0,099 puntos en promedio
+    (mediana 0,049; peor caso 0,841; solo 4 de 119 valores se pasan de medio
+    punto). Es tan chica porque el tamaño de una semana varía poco: el total
+    semanal de Colombia en 2026 se mueve apenas un 6%.
+
+    Se prefiere SIEMPRE la exacta cuando los datos alcanzan, así que en
+    cuanto un año tenga los streams crudos completos (2027 en adelante, que
+    ya arranca sin huecos) el cálculo vuelve solo a la fórmula validada.
     """
     anio_anterior = anio_actual - 1
 
-    historico_pais_anterior = history.cargar_ms_label_weekly()
-    historico_pais_anterior = historico_pais_anterior[
-        (historico_pais_anterior["country_code"] == country_code)
-        & (historico_pais_anterior["anio"] == anio_anterior)
+    # `streams` y `bandas` se pueden pasar ya cargadas: el histórico por
+    # banda son 171.850 filas y leerlo de SQLite una vez por país (17 veces
+    # por reporte, más otras 17 para las pestañas) costaba 15 de los 22
+    # segundos que tardaba la corrida.
+    streams = history.cargar_ms_label_weekly() if streams is None else streams
+    streams_pais = streams[streams["country_code"] == country_code]
+    bandas = history.cargar_ms_band_label_weekly() if bandas is None else bandas
+    bandas_pais = bandas[bandas["country_code"] == country_code] if not bandas.empty else bandas
+
+    # Hasta dónde llega el año anterior: se mira la fuente más completa de
+    # las dos, porque el histórico de porcentajes llega más lejos que el de
+    # streams.
+    def semana_maxima(anio):
+        candidatas = [
+            df.loc[df["anio"] == anio, "semana"].max()
+            for df in (streams_pais, bandas_pais)
+            if not df.empty and (df["anio"] == anio).any()
+        ]
+        return int(max(candidatas)) if candidatas else 0
+
+    hasta_semana_efectiva = min(hasta_semana, semana_maxima(anio_anterior))
+
+    ytd_actual = streams_pais[
+        (streams_pais["anio"] == anio_actual) & (streams_pais["semana"] <= hasta_semana_efectiva)
     ]
-    semana_max_anterior = (
-        int(historico_pais_anterior["semana"].max())
-        if not historico_pais_anterior.empty
-        else 0
+    ytd_anterior = streams_pais[
+        (streams_pais["anio"] == anio_anterior) & (streams_pais["semana"] <= hasta_semana_efectiva)
+    ]
+
+    hay_streams_completos = (
+        _semanas_completas(ytd_actual, hasta_semana_efectiva)
+        and _semanas_completas(ytd_anterior, hasta_semana_efectiva)
     )
-    hasta_semana_efectiva = min(hasta_semana, semana_max_anterior)
 
-    ytd_actual = history.query_ytd_ms(anio_actual, hasta_semana_efectiva)
-    ytd_actual = ytd_actual[ytd_actual["country_code"] == country_code]
-    ytd_anterior = history.query_ytd_ms(anio_anterior, hasta_semana_efectiva)
-    ytd_anterior = ytd_anterior[ytd_anterior["country_code"] == country_code]
-
-    streams_actual = ytd_actual.groupby("label_group")["streams_top200"].sum()
-    streams_anterior = ytd_anterior.groupby("label_group")["streams_top200"].sum()
-
-    total_actual = streams_actual.sum()
-    total_anterior = streams_anterior.sum()
+    if hay_streams_completos:
+        pct_actual_por_label, pct_anterior_por_label = _ytd_exacto(ytd_actual, ytd_anterior)
+    else:
+        pct_actual_por_label = _ytd_promedio_semanal(bandas_pais, anio_actual, hasta_semana_efectiva)
+        pct_anterior_por_label = _ytd_promedio_semanal(bandas_pais, anio_anterior, hasta_semana_efectiva)
 
     filas = []
     for label in config.LABEL_GROUPS_MS:
-        s_actual = float(streams_actual.get(label, 0.0))
-        s_anterior = float(streams_anterior.get(label, 0.0))
-        pct_actual = s_actual / total_actual if total_actual else 0.0
-        pct_anterior = s_anterior / total_anterior if total_anterior else 0.0
+        pct_actual = pct_actual_por_label[label]
+        pct_anterior = pct_anterior_por_label[label]
         filas.append({
             "label_group": label,
             f"pct_YTD_{anio_actual}": pct_actual,
@@ -94,7 +189,7 @@ def calcular_ytd_por_pais(
     return pd.DataFrame(filas)
 
 
-def calcular_streams_pct_grid(country_code: str) -> pd.DataFrame:
+def calcular_streams_pct_grid(country_code: str, bandas: pd.DataFrame = None) -> pd.DataFrame:
     """Tabla larga (tidy) con el % de streams por banda y sello, semana a
     semana, para un país -- lo que muestran las sub-tablas "Streams (%)
     TOP N" del reporte real.
@@ -110,7 +205,7 @@ def calcular_streams_pct_grid(country_code: str) -> pd.DataFrame:
     Una fila por (anio, semana, chart_date, banda, label_group, pct).
     """
     columnas = ["anio", "semana", "chart_date", "banda", "label_group", "pct"]
-    historico = history.cargar_ms_band_label_weekly()
+    historico = history.cargar_ms_band_label_weekly() if bandas is None else bandas
     if historico.empty:
         return pd.DataFrame(columns=columnas)
 
@@ -231,7 +326,8 @@ def _pintar_gl(celda, valor) -> None:
         _pintar(celda, config.COLOR_SEMAFORO_AMARILLO, config.COLOR_TEXTO_SEMAFORO_AMARILLO)
 
 
-def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int) -> None:
+def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int,
+                          streams: pd.DataFrame = None, bandas: pd.DataFrame = None) -> None:
     """Escribe la pestaña resumen "% Market Share" como una cuadrícula de
     tablas por país (ver constantes _MS_* arriba) -- se arma directo con
     openpyxl (no con `.to_excel(...)`) por el mismo motivo que en
@@ -282,8 +378,9 @@ def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int) -> None:
             celda.font = negrita
             celda.alignment = centrado
 
-        tabla_pais = calcular_ytd_por_pais(country_code, anio_actual, hasta_semana)
-        tabla_pais = tabla_pais.set_index("label_group")
+        tabla_pais = calcular_ytd_por_pais(
+            country_code, anio_actual, hasta_semana, streams=streams, bandas=bandas
+        ).set_index("label_group")
 
         campo_actual = f"pct_YTD_{anio_actual}"
         campo_anterior = f"pct_YTD_{anio_actual - 1}"
@@ -337,7 +434,7 @@ _MSPAIS_FILA_SEMANA = 3
 _MSPAIS_FILA_PRIMER_DATO = 4
 
 
-def _escribir_pagina_pais(ws, country_code: str) -> None:
+def _escribir_pagina_pais(ws, country_code: str, bandas: pd.DataFrame = None) -> None:
     """Escribe la pestaña individual de un país como cuadrícula semanal
     (ver constantes _MSPAIS_* arriba). Si todavía no hay ninguna semana
     guardada en chart_track_weekly para este país, la cuadrícula sale sin
@@ -354,7 +451,7 @@ def _escribir_pagina_pais(ws, country_code: str) -> None:
     )
     celda_titulo.font = Font(bold=True, size=12)
 
-    grid = calcular_streams_pct_grid(country_code)
+    grid = calcular_streams_pct_grid(country_code, bandas=bandas)
     semanas = (
         grid[["anio", "semana", "chart_date"]]
         .drop_duplicates()
@@ -440,14 +537,29 @@ def generar_reporte(
     fecha = pd.Timestamp(df_semana["chart_date"].unique()[0])
     anio_actual = fecha.year
 
-    todo_el_historico = history.cargar_ms_label_weekly()
-    hasta_semana = int(todo_el_historico.loc[todo_el_historico["anio"] == anio_actual, "semana"].max())
+    # Hasta qué semana del año en curso llega el YTD. Se mira la fuente más
+    # completa de las dos: el histórico de porcentajes por banda llega más
+    # lejos que el de streams crudos (ver calcular_ytd_por_pais), y si nos
+    # quedáramos con el de streams el reporte diría "a Sem 33" pero
+    # compararía solo hasta la 24.
+    semanas_max = []
+    for cargar in (history.cargar_ms_label_weekly, history.cargar_ms_band_label_weekly):
+        df = cargar()
+        del_anio = df.loc[df["anio"] == anio_actual, "semana"] if not df.empty else None
+        if del_anio is not None and not del_anio.empty:
+            semanas_max.append(int(del_anio.max()))
+    hasta_semana = max(semanas_max) if semanas_max else 0
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        # Los dos históricos se leen UNA vez y se pasan a todo lo que los
+        # necesita (17 países x 2 hojas). Ver la nota en calcular_ytd_por_pais.
+        streams = history.cargar_ms_label_weekly()
+        bandas = history.cargar_ms_band_label_weekly()
+
         ws_resumen = writer.book.create_sheet(config.MS_SHEET_PORCENTAJE)
-        _escribir_resumen_pct(ws_resumen, anio_actual, hasta_semana)
+        _escribir_resumen_pct(ws_resumen, anio_actual, hasta_semana, streams=streams, bandas=bandas)
         for country_code in config.PAISES_MS:
             ws_pais = writer.book.create_sheet(country_code)
-            _escribir_pagina_pais(ws_pais, country_code)
+            _escribir_pagina_pais(ws_pais, country_code, bandas=bandas)
 
     return output_path

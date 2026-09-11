@@ -456,3 +456,74 @@ def test_semaforo_por_pais_no_pinta_semanas_sin_datos(tmp_path):
     ws = openpyxl.load_workbook(salida)["CO"]
     # Universal "empata" en cero con todos; no debe salir verde.
     assert _color_de(ws.cell(row=4, column=_MSPAIS_PRIMERA_COL_DATO)) is None
+
+
+# --- las dos formas de calcular el YTD (Ajuste 12) ---
+
+def _sembrar_bandas(tmp_path, filas):
+    """Siembra solo ms_band_label_weekly (el histórico de % por banda)."""
+    bandas_csv = tmp_path / "seed_bandas.csv"
+    pd.DataFrame(filas).to_csv(bandas_csv, index=False)
+    history.seed_historico(ms_bandas_csv=bandas_csv)
+
+
+def test_ytd_usa_la_formula_exacta_cuando_estan_todos_los_streams(tmp_path):
+    # Con los streams crudos completos de las semanas 1-2 en ambos años, el
+    # resultado tiene que seguir siendo la suma ponderada de siempre, aunque
+    # exista el histórico de porcentajes.
+    _sembrar_dos_anios(tmp_path)
+    _sembrar_bandas(tmp_path, [
+        # % semanales que darían OTRO resultado si se usara el promedio,
+        # justamente para notar si se cuela la aproximación.
+        {"anio": 2026, "semana": s, "chart_date": f"2026-01-0{s}", "country_code": "CO",
+         "banda": 200, "label_group": "Universal", "pct_streams": 0.10}
+        for s in (1, 2)
+    ])
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2).set_index("label_group")
+    assert tabla.loc["Universal", "pct_YTD_2026"] == pytest.approx(60 / 80)  # exacta, no 0.10
+
+
+def test_ytd_cae_al_promedio_semanal_cuando_faltan_streams(tmp_path):
+    # Sin streams crudos, pero con el histórico de porcentajes completo: el
+    # YTD sale del promedio del % semanal de la banda 200.
+    _sembrar_bandas(tmp_path, [
+        {"anio": anio, "semana": s, "chart_date": f"{anio}-01-0{s}", "country_code": "CO",
+         "banda": 200, "label_group": lab, "pct_streams": pct}
+        for anio, pcts in ((2026, {"Universal": (0.20, 0.40), "Sony": (0.80, 0.60)}),
+                           (2025, {"Universal": (0.50, 0.50), "Sony": (0.50, 0.50)}))
+        for lab, valores in pcts.items()
+        for s, pct in zip((1, 2), valores)
+    ])
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2).set_index("label_group")
+
+    assert tabla.loc["Universal", "pct_YTD_2026"] == pytest.approx(0.30)  # (0.20+0.40)/2
+    assert tabla.loc["Sony", "pct_YTD_2026"] == pytest.approx(0.70)
+    assert tabla.loc["Universal", "pct_YTD_2025"] == pytest.approx(0.50)
+    assert tabla.loc["Universal", "g_l"] == pytest.approx(0.30 - 0.50)
+
+
+def test_ytd_no_suma_streams_si_hay_un_hueco_en_el_periodo(tmp_path):
+    # Caso real: hay streams de las semanas 1-24 pero faltan las 25-33.
+    # Sumar solo lo que hay daría el share de un subconjunto, no del período
+    # completo -- tiene que usar la aproximación.
+    chart_csv = _csv_vacio_market(tmp_path, "seed_chart.csv",
+                                  ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame([
+        # solo la semana 1; falta la 2
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-01"}
+        for a in (2025, 2026)
+        for lab, v in (("Universal", 90.0), ("Sony", 10.0))
+    ]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+    _sembrar_bandas(tmp_path, [
+        {"anio": a, "semana": s, "chart_date": f"{a}-01-0{s}", "country_code": "CO",
+         "banda": 200, "label_group": "Universal", "pct_streams": 0.10}
+        for a in (2025, 2026) for s in (1, 2)
+    ])
+
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2).set_index("label_group")
+    # Si hubiera sumado los streams de la semana 1 daría 0.90; con el hueco
+    # usa el promedio del % semanal -> 0.10.
+    assert tabla.loc["Universal", "pct_YTD_2026"] == pytest.approx(0.10)
