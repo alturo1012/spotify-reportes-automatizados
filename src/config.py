@@ -254,6 +254,34 @@ COLOR_TEXTO_SEMAFORO_VERDE = "006100"
 # ordenadas por cantidad de países y suma de posiciones).
 TOP_N_LISTADO_CANCIONES = 200
 
+# ---------------------------------------------------------------------------
+# Reporte BMAT (Promúsica Colombia)
+#
+# Es un reporte aparte de los de Spotify, con su propio universo de datos:
+# BMAT/Promúsica consolida varias plataformas (ver BMAT_FUENTE), no solo
+# Spotify, y usa sus propias bandas y su propia lista de sellos -- 8 en vez
+# de 7 (aparece "ADA Music") y con otra grafía ("Ingrooves" en vez de
+# "INgrooves", "Independientes" en vez de "Indies"). Por eso NO reutiliza
+# LABEL_GROUPS_MS ni BANDAS_MARKET_SHARE: son universos distintos que
+# coinciden en parte, y unificarlos escondería esa diferencia.
+#
+# Todo verificado contra "MS BMAT COL a Sem 23 de 2026.xlsx".
+# ---------------------------------------------------------------------------
+BMAT_PAIS = "CO"
+BMAT_BANDAS = [10, 50, 100, 200, 1000, 3000, 5000, 10000]
+BMAT_LABELS = [
+    "Universal", "Ingrooves", "Virgin", "Sony",
+    "The Orchard", "Warner", "ADA Music", "Independientes",
+]
+BMAT_SHEET_RESUMEN = "Resumen Promusica Colombia"
+BMAT_SHEET_MARKET_SHARE = "Market Share Promusica Colombia"
+BMAT_TITULO_RESUMEN = "TOP 1.000 \nPROMUSICA COLOMBIA"
+BMAT_TITULO_MARKET_SHARE = "TOP 5.000 PROMUSICA\n COLOMBIA"
+BMAT_FUENTE = "FUENTE ( Napster, GooglePlay, Spotify, Deezer)"
+# Azul marino de los encabezados de ese archivo (distinto del de los
+# reportes de Spotify, que usan 1F3864).
+COLOR_BANNER_BMAT = "002060"
+
 CHART_SHEET_RESUMEN = "Resumen Total"
 CHART_SHEET_DETALLE = "Detalle Tracks"
 MS_SHEET_PORCENTAJE = "% Market Share"

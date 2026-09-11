@@ -23,6 +23,56 @@ import pandas as pd
 from . import chart_semanal, config, history, load_data, market_share
 
 
+# Cuántas semanas de diferencia se toleran entre el número que le vamos a
+# asignar a esta semana y la semana del calendario que le corresponde a su
+# fecha, antes de sospechar que faltan semanas en el histórico. Se deja
+# holgado (3) porque la numeración del proyecto es secuencial por año, no
+# ISO, y puede desfasarse un poco de forma legítima.
+TOLERANCIA_SEMANAS = 3
+
+
+def revisar_historico(fecha) -> str:
+    """Avisa si el histórico parece vacío o incompleto. Devuelve el motivo,
+    o None si todo se ve bien.
+
+    Existe por un problema real: al usuario se le borró la base sin querer y
+    cargó una semana de agosto sobre un histórico vacío. El programa la
+    numeró como "semana 1", generó los dos reportes sin quejarse, y salieron
+    con una sola fila de historia y el YTD todo en ceros -- tuvo que darse
+    cuenta él abriendo los archivos.
+
+    Cómo lo detecta: compara el número que le va a tocar a esta semana
+    contra la semana del calendario de su fecha. Si vamos a guardar la
+    "semana 1" y la fecha es de agosto (semana ~34), falta casi todo el
+    año -- señal de que la base se borró o nunca se sembró.
+    """
+    fecha = pd.Timestamp(fecha)
+    anio = fecha.year
+    semana_calendario = fecha.isocalendar()[1]
+
+    historico = history.cargar_chart_band_weekly()
+    if historico.empty:
+        return (
+            "el histórico está VACÍO: esta semana se va a guardar como la número 1 "
+            "y los reportes van a salir con una sola fila de historia. "
+            "Revisa que exista data/history/universal_data.db y, si no, corre "
+            "`python -m scripts.sembrar_historico` antes de generar."
+        )
+
+    del_anio = historico.loc[historico["anio"] == anio, "semana"]
+    proxima_semana = (int(del_anio.max()) + 1) if not del_anio.empty else 1
+
+    if semana_calendario - proxima_semana >= TOLERANCIA_SEMANAS:
+        return (
+            f"esta semana se va a guardar como la número {proxima_semana} de {anio}, "
+            f"pero su fecha ({fecha.date()}) corresponde a la semana {semana_calendario} "
+            "del calendario. Parece que al histórico le faltan semanas: los reportes "
+            "van a salir incompletos. Si borraste la base, corre "
+            "`python -m scripts.sembrar_historico` y vuelve a cargar esta semana."
+        )
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Genera los reportes semanales de Spotify Latam")
     parser.add_argument(
@@ -50,6 +100,8 @@ def main(argv=None):
         )
     fecha = fechas[0]
 
+    avisos = []
+
     ya_cargada = history.semana_ya_cargada(fecha)
     if ya_cargada:
         print(
@@ -58,6 +110,12 @@ def main(argv=None):
             "Se regeneran los reportes igual, con el histórico que ya había."
         )
     guardar_en_historico = not ya_cargada
+
+    if guardar_en_historico:
+        aviso_historico = revisar_historico(fecha)
+        if aviso_historico:
+            avisos.append(aviso_historico)
+            print(f"Aviso: {aviso_historico}")
 
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -68,6 +126,8 @@ def main(argv=None):
     ms_out = config.OUTPUT_DIR / f"Reporte_MS_TOP200_Sem_{args.semana}.xlsx"
     market_share.generar_reporte(df, ms_out, guardar_en_historico=guardar_en_historico)
     print(f"Reporte de market share generado: {ms_out}")
+
+    return avisos
 
 
 if __name__ == "__main__":

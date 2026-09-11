@@ -98,3 +98,65 @@ def test_main_corrido_dos_veces_con_la_misma_fuente_no_duplica_la_semana(tmp_pat
 def test_main_falla_con_mensaje_claro_si_no_existe_el_archivo(tmp_path):
     with pytest.raises(SystemExit, match="No se encontró el archivo fuente"):
         main.main(["--fuente", str(tmp_path / "no_existe.xlsx"), "--semana", "25"])
+
+
+# --- aviso de histórico vacío o incompleto ---
+
+def test_avisa_cuando_el_historico_esta_vacio(tmp_path):
+    # Lo que le pasó al usuario: se borró la base y cargó una semana de
+    # agosto sobre un histórico vacío. Antes se generaban dos reportes en
+    # ceros sin decir nada.
+    assert history.cargar_chart_band_weekly().empty
+    aviso = main.revisar_historico(pd.Timestamp("2026-08-20"))
+    assert aviso is not None
+    assert "VACÍO" in aviso
+    assert "sembrar_historico" in aviso
+
+
+def test_avisa_cuando_al_historico_le_faltan_semanas(tmp_path):
+    # Hay histórico, pero solo hasta la semana 2, y se carga una de agosto.
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": s, "mes": "ENERO", "country_code": "CO",
+         "banda": 10, "conteo_universal": 1}
+        for s in (1, 2)
+    ]).to_csv(chart_csv, index=False)
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame(columns=["anio", "semana", "country_code", "label_group",
+                          "streams_top200", "chart_date"]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+    aviso = main.revisar_historico(pd.Timestamp("2026-08-20"))
+    assert aviso is not None and "faltan semanas" in aviso
+    assert "número 3" in aviso  # la que le tocaría
+
+
+def test_no_avisa_cuando_el_historico_viene_al_dia(tmp_path):
+    # 33 semanas cargadas y se carga la 34: todo normal.
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": s, "mes": "ENERO", "country_code": "CO",
+         "banda": 10, "conteo_universal": 1}
+        for s in range(1, 34)
+    ]).to_csv(chart_csv, index=False)
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame(columns=["anio", "semana", "country_code", "label_group",
+                          "streams_top200", "chart_date"]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+    assert main.revisar_historico(pd.Timestamp("2026-08-20")) is None
+
+
+def test_no_avisa_en_la_primera_semana_del_ano(tmp_path):
+    # Arrancar un año nuevo desde cero es normal, no un histórico roto.
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO",
+         "banda": 10, "conteo_universal": 1},
+    ]).to_csv(chart_csv, index=False)
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame(columns=["anio", "semana", "country_code", "label_group",
+                          "streams_top200", "chart_date"]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+    assert main.revisar_historico(pd.Timestamp("2027-01-07")) is None

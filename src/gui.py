@@ -35,15 +35,21 @@ def generar(fuente_path: str, semana: str):
     sin necesitar una pantalla (tkinter no se importa en los tests).
 
     Devuelve (chart_out, ms_out, aviso). `aviso` es None si todo salió
-    bien, o el motivo por el que no se pudieron resolver las fechas de
-    lanzamiento vía Spotify. Existe porque el .exe se empaqueta con
-    --windowed (sin consola): ese aviso se imprime con `print` y ahí no lo
-    ve nadie, así que la ventana lo tiene que mostrar en el mensaje final.
+    bien, o el texto de lo que haya que advertir: que el histórico está
+    vacío o incompleto (ver main.revisar_historico) y/o que no se pudieron
+    resolver las fechas de lanzamiento vía Spotify. Existe porque el .exe se
+    empaqueta con --windowed (sin consola): esos avisos se imprimen con
+    `print` y ahí no los ve nadie, así que la ventana los tiene que mostrar
+    en el mensaje final.
     """
-    main_module.main(["--fuente", fuente_path, "--semana", semana])
+    avisos = list(main_module.main(["--fuente", fuente_path, "--semana", semana]) or [])
+    aviso_fechas = chart_semanal.ultimo_aviso_fechas()
+    if aviso_fechas:
+        avisos.append(aviso_fechas)
+
     chart_out = config.OUTPUT_DIR / f"Reporte_Chart_Top_Semanal_Sem_{semana}.xlsx"
     ms_out = config.OUTPUT_DIR / f"Reporte_MS_TOP200_Sem_{semana}.xlsx"
-    return chart_out, ms_out, chart_semanal.ultimo_aviso_fechas()
+    return chart_out, ms_out, "\n\n".join(avisos) if avisos else None
 
 
 class App(tk.Tk):

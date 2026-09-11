@@ -47,6 +47,7 @@ SEED_DIR = config.ROOT_DIR / "data" / "history" / "seed"
 SEED_CHART_CSV = SEED_DIR / "seed_chart_band_weekly.csv"
 SEED_MS_CSV = SEED_DIR / "seed_ms_label_weekly.csv"
 SEED_MS_BANDAS_CSV = SEED_DIR / "seed_ms_band_label_weekly.csv"
+SEED_BMAT_CSV = SEED_DIR / "seed_bmat_weekly.csv"
 
 
 def conectar() -> sqlite3.Connection:
@@ -108,6 +109,21 @@ def _conectar() -> sqlite3.Connection:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS bmat_weekly (
+            anio INTEGER NOT NULL,
+            semana INTEGER NOT NULL,
+            country_code TEXT NOT NULL,
+            banda INTEGER NOT NULL,
+            label_group TEXT NOT NULL,
+            tracks REAL,
+            streams_millones REAL,
+            pct_streams REAL,
+            PRIMARY KEY (anio, semana, country_code, banda, label_group)
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS ms_band_label_weekly (
             anio INTEGER NOT NULL,
             semana INTEGER NOT NULL,
@@ -127,6 +143,7 @@ def seed_historico(
     chart_csv: Path = None,
     ms_csv: Path = None,
     ms_bandas_csv: Path = None,
+    bmat_csv: Path = None,
 ) -> None:
     """Carga UNA VEZ el histórico ya extraído de los reportes/plantillas
     reales. Es seguro correrlo más de una vez: usa INSERT OR IGNORE, así que
@@ -150,8 +167,9 @@ def seed_historico(
 
     Es seguro correrlo más de una vez: usa INSERT OR IGNORE.
     """
-    if chart_csv is None and ms_csv is None and ms_bandas_csv is None:
-        chart_csv, ms_csv, ms_bandas_csv = SEED_CHART_CSV, SEED_MS_CSV, SEED_MS_BANDAS_CSV
+    if chart_csv is None and ms_csv is None and ms_bandas_csv is None and bmat_csv is None:
+        chart_csv, ms_csv = SEED_CHART_CSV, SEED_MS_CSV
+        ms_bandas_csv, bmat_csv = SEED_MS_BANDAS_CSV, SEED_BMAT_CSV
 
     chart_df = pd.read_csv(chart_csv) if chart_csv is not None else None
     ms_df = pd.read_csv(ms_csv) if ms_csv is not None else None
@@ -175,6 +193,18 @@ def seed_historico(
                 ms_df[
                     ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"]
                 ].itertuples(index=False, name=None),
+            )
+        if bmat_csv is not None:
+            bmat_df = pd.read_csv(bmat_csv)
+            conn.executemany(
+                """INSERT OR IGNORE INTO bmat_weekly
+                   (anio, semana, country_code, banda, label_group,
+                    tracks, streams_millones, pct_streams)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                bmat_df[
+                    ["anio", "semana", "country_code", "banda", "label_group",
+                     "tracks", "streams_millones", "pct_streams"]
+                ].astype(object).where(pd.notna(bmat_df), None).itertuples(index=False, name=None),
             )
         if ms_bandas_csv is not None:
             bandas_df = pd.read_csv(ms_bandas_csv)
@@ -320,6 +350,16 @@ def append_semana_ms_bandas(df_semana: pd.DataFrame) -> None:
             filas,
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def cargar_bmat_weekly() -> pd.DataFrame:
+    conn = _conectar()
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM bmat_weekly ORDER BY anio, semana, banda, label_group", conn
+        )
     finally:
         conn.close()
 
