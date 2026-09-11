@@ -302,3 +302,157 @@ def test_generar_reporte_agrega_la_semana_a_la_cuadricula_por_pais(tmp_path):
     ws = wb["CO"]
     assert ws.cell(row=2, column=3).value.date().isoformat() == "2026-06-18"
     assert ws.cell(row=4, column=3).value == pytest.approx(0.5)  # Universal 1 de 2 tracks, mismos streams
+
+
+# --- semáforo del resumen "% Market Share" (Ajuste 11) ---
+
+# Primera columna con datos de la cuadrícula por país (A=banda, B=sello, C+=semanas).
+_MSPAIS_PRIMERA_COL_DATO = 3
+
+
+def _color_de(celda):
+    """Devuelve 'ROJO' / 'VERDE' / 'AMARILLO' / None según el relleno."""
+    if not celda.fill or celda.fill.fill_type is None:
+        return None
+    rgb = str(getattr(celda.fill.start_color, "rgb", ""))[-6:]
+    return {
+        config.COLOR_SEMAFORO_ROJO: "ROJO",
+        config.COLOR_SEMAFORO_VERDE: "VERDE",
+        config.COLOR_SEMAFORO_AMARILLO: "AMARILLO",
+    }.get(rgb)
+
+
+def _sembrar_bloque_co(tmp_path, filas_ms):
+    chart_csv = _csv_vacio_market(tmp_path, "seed_chart.csv",
+                                  ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame(filas_ms).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+
+def _celdas_co(salida):
+    """(fila del sello) -> (celda YTD actual, celda YTD anterior, celda G/L)
+    del bloque de Colombia, que es el primero: filas 7-13, columnas C/D/E."""
+    ws = openpyxl.load_workbook(salida)[config.MS_SHEET_PORCENTAJE]
+    celdas = {}
+    for k, label in enumerate(config.ORDEN_LABELS_MS_RESUMEN):
+        r = 7 + k
+        celdas[label] = (ws.cell(row=r, column=3), ws.cell(row=r, column=4), ws.cell(row=r, column=5))
+    return celdas
+
+
+def test_semaforo_pinta_de_rojo_a_los_sellos_que_le_ganan_a_universal(tmp_path):
+    # Universal 20%, Sony 50% y Warner 30% le ganan; INgrooves 0% no.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 20.0), ("Sony", 50.0), ("Warner", 30.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    assert _color_de(celdas["Sony"][0]) == "ROJO"      # 50% > 20%
+    assert _color_de(celdas["Warner"][0]) == "ROJO"    # 30% > 20%
+    assert _color_de(celdas["INgrooves"][0]) is None   # 0% no le gana
+    assert _color_de(celdas["Universal"][0]) is None   # no es el máximo -> sin verde
+    # la regla se aplica igual en la columna del año anterior
+    assert _color_de(celdas["Sony"][1]) == "ROJO"
+
+
+def test_semaforo_pinta_de_verde_a_universal_cuando_va_de_primero(tmp_path):
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 80.0), ("Sony", 20.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    assert _color_de(celdas["Universal"][0]) == "VERDE"
+    assert _color_de(celdas["Sony"][0]) is None
+
+
+def test_semaforo_de_la_columna_gl_es_por_signo(tmp_path):
+    # Universal sube (20% -> 60%), Sony baja (80% -> 40%), Warner queda igual.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 60.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 40.0, "chart_date": "2026-01-01"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 20.0, "chart_date": "2025-01-02"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 80.0, "chart_date": "2025-01-02"},
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    assert _color_de(celdas["Universal"][2]) == "VERDE"     # ganó participación
+    assert _color_de(celdas["Sony"][2]) == "ROJO"           # perdió
+    assert _color_de(celdas["Warner"][2]) == "AMARILLO"     # 0% los dos años -> sin cambio
+
+
+def test_semaforo_no_pinta_verde_en_un_pais_sin_datos(tmp_path):
+    # Con todo en cero, Universal sería "el máximo" por empate técnico; no
+    # debe salir verde, sería engañoso.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "PE", "label_group": "Universal",
+         "streams_top200": 10.0, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)  # Colombia no tiene datos en este histórico
+
+    assert _color_de(celdas["Universal"][0]) is None
+    assert _color_de(celdas["Sony"][0]) is None
+
+
+def test_semaforo_en_la_cuadricula_por_pais(tmp_path):
+    # Misma regla que en el resumen, pero el grupo son los 7 sellos de UNA
+    # banda en UNA semana. Verificado 1:1 contra la pestaña CO real.
+    _sembrar_dos_anios(tmp_path)
+    # Banda 10: Universal 25%, Warner 50% (le gana), Sony 25% (empata, no gana).
+    # Banda 20: Universal 60% -> lidera, va en verde.
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"] * 5,
+        "chart_date": pd.to_datetime(["2026-07-02"] * 5),
+        "position": [1, 2, 3, 15, 16],
+        "label_group": ["Universal", "Warner", "Sony", "Universal", "Warner"],
+        "stream_count": [25, 50, 25, 200, 0],
+    })
+    history.append_semana_ms_bandas(df_semana)
+
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)["CO"]
+    fila = {lab: 4 + k for k, lab in enumerate(config.LABEL_GROUPS_MS)}          # banda 10
+    fila20 = {lab: 12 + k for k, lab in enumerate(config.LABEL_GROUPS_MS)}       # banda 20
+    col = _MSPAIS_PRIMERA_COL_DATO
+
+    assert _color_de(ws.cell(row=fila["Warner"], column=col)) == "ROJO"     # 50% > 25%
+    assert _color_de(ws.cell(row=fila["Sony"], column=col)) is None        # 25% empata, no gana
+    assert _color_de(ws.cell(row=fila["Universal"], column=col)) is None   # no lidera
+    # en la banda 20 Universal sí lidera
+    assert _color_de(ws.cell(row=fila20["Universal"], column=col)) == "VERDE"
+
+
+def test_semaforo_por_pais_no_pinta_semanas_sin_datos(tmp_path):
+    _sembrar_dos_anios(tmp_path)
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"],
+        "chart_date": pd.to_datetime(["2026-07-02"]),
+        "position": [1],
+        "label_group": ["Universal"],
+        "stream_count": [0],  # sin streams: todo el bloque queda en cero
+    })
+    history.append_semana_ms_bandas(df_semana)
+
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)["CO"]
+    # Universal "empata" en cero con todos; no debe salir verde.
+    assert _color_de(ws.cell(row=4, column=_MSPAIS_PRIMERA_COL_DATO)) is None

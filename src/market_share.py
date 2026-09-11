@@ -146,18 +146,89 @@ def construir_resumen_pct(anio_actual: int, hasta_semana: int) -> pd.DataFrame:
 #     y 7 filas de sellos debajo (config.ORDEN_LABELS_MS_RESUMEN). 4 bloques
 #     de país por fila, con una columna angosta de separación entre cada
 #     uno, igual que la plantilla real.
-# NOTA: la plantilla original resalta con colores algunas celdas de G/L,
-# pero la regla real (revisada en el archivo) no es simple ("mayor que la
-# fila de arriba", comparaciones entre celdas específicas) -- no se pudo
-# generalizar con certeza a partir de eso, así que se dejó fuera de este
-# ajuste a propósito. Avisar si se quiere una regla más simple (ej. verde si
-# G/L > 0, rojo si G/L < 0) para agregarla.
 _MS_COL_INICIAL = 2  # columna B, igual que la plantilla real (A queda vacía)
 _MS_COLS_POR_BLOQUE = 4  # nombre, YTD actual, YTD anterior, G/L
 _MS_BLOQUES_POR_FILA = 4
 _MS_FILAS_POR_BLOQUE = 11  # banner + blanco + subencabezado + 7 sellos + blanco
 _MS_FILA_BANNER_TOP200 = 2
 _MS_FILA_PRIMER_BLOQUE = 4
+
+
+# ---------------------------------------------------------------------------
+# Semáforo del Reporte_MS_TOP200. La regla se sacó del formato condicional
+# REAL del reporte oficial (las fórmulas y los dxf de MS TOP 200 a la Sem 33),
+# no de mirar una captura, y es LA MISMA en las dos pestañas:
+#
+#   - Se pinta de ROJO el sello cuyo porcentaje le GANA a Universal dentro de
+#     su grupo. Es un reporte de Universal: lo que se quiere ver de un vistazo
+#     es quién va por delante.
+#   - Si Universal es el más alto del grupo, su propia celda va en VERDE.
+#
+#   El "grupo" es lo único que cambia entre las dos pestañas:
+#     · resumen "% Market Share": los 7 sellos de un país, por columna YTD.
+#     · pestaña de país: los 7 sellos de una banda, en la columna de esa semana.
+#
+#   La columna G/L (solo en el resumen) tiene su propia regla, por signo:
+#   VERDE si ganó participación, ROJO si perdió, AMARILLO si quedó igual. En
+#   el archivo real son tres reglas contra los umbrales de las celdas
+#   U1/V1/W1/X1, que están VACÍAS, y Excel las lee como 0 -- o sea, el signo.
+#
+# DOS ERRORES DE LA PLANTILLA ORIGINAL QUE ACÁ NO SE REPLICAN (a propósito).
+# Los dos están en la pestaña resumen; las pestañas de país sí la tienen bien:
+#   1. En 4 de los 5 bloques de fila, las reglas de las dos últimas filas
+#      (Indies y Virgin) comparan contra la fila del SUBENCABEZADO en vez de
+#      contra la de Universal (C17 en vez de C18, C28 en vez de C29, etc.).
+#      Como esa celda tiene el nombre del país (texto), en Excel un número
+#      nunca es "mayor que" un texto: esas dos filas NO se pintan nunca,
+#      aunque le ganen a Universal. Afecta a 13 de los 17 países.
+#   2. Los bloques 3 y 4 evalúan el verde con la fórmula del bloque 2
+#      (C18=MAX(C18:C24) sin actualizar al copiar), y el MAX del bloque 1
+#      deja a Virgin fuera del rango (C7:C12 en vez de C7:C13).
+# Acá la regla se aplica igual para los 7 sellos de los 17 países, así que
+# van a salir en rojo algunas celdas que en el archivo viejo no se pintaban.
+# ---------------------------------------------------------------------------
+
+def _referencia_grupo(valores_por_label: dict):
+    """Arma la referencia del semáforo para un grupo de 7 sellos.
+
+    `valores_por_label` es {label: valor o None}. Devuelve
+    {"universal": v, "maximo": m} o None si el grupo no tiene datos (todo en
+    cero o vacío): en ese caso no se pinta nada, porque si no Universal
+    saldría en verde por empate técnico y eso engaña.
+    """
+    presentes = [v for v in valores_por_label.values() if v is not None]
+    if not presentes or sum(presentes) == 0:
+        return None
+    return {"universal": valores_por_label.get("Universal"), "maximo": max(presentes)}
+
+
+def _pintar(celda, fondo: str, texto: str) -> None:
+    celda.fill = PatternFill(start_color=fondo, end_color=fondo, fill_type="solid")
+    celda.font = Font(color=texto)
+
+
+def _pintar_vs_universal(celda, valor, label: str, referencia) -> None:
+    """Rojo si le gana a Universal; verde en la celda de Universal si lidera."""
+    if valor is None or referencia is None or referencia["universal"] is None:
+        return
+    if label == "Universal":
+        if valor < referencia["maximo"]:
+            return
+        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE)
+    elif valor > referencia["universal"]:
+        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO)
+
+
+def _pintar_gl(celda, valor) -> None:
+    """Columna G/L del resumen: verde si ganó, rojo si perdió, amarillo si igual."""
+    if valor is None:
+        return
+    if valor > 0:
+        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE)
+    elif valor < 0:
+        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO)
+    else:
+        _pintar(celda, config.COLOR_SEMAFORO_AMARILLO, config.COLOR_TEXTO_SEMAFORO_AMARILLO)
 
 
 def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int) -> None:
@@ -213,16 +284,34 @@ def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int) -> None:
 
         tabla_pais = calcular_ytd_por_pais(country_code, anio_actual, hasta_semana)
         tabla_pais = tabla_pais.set_index("label_group")
+
+        campo_actual = f"pct_YTD_{anio_actual}"
+        campo_anterior = f"pct_YTD_{anio_actual - 1}"
+
+        def valor_de(label, campo):
+            if label not in tabla_pais.index or campo not in tabla_pais.columns:
+                return None
+            return float(tabla_pais.loc[label, campo])
+
+        # Una referencia por columna YTD: el grupo es "los 7 sellos del país".
+        referencia = {
+            campo: _referencia_grupo({lab: valor_de(lab, campo) for lab in config.ORDEN_LABELS_MS_RESUMEN})
+            for campo in (campo_actual, campo_anterior)
+        }
+
         for k, label in enumerate(config.ORDEN_LABELS_MS_RESUMEN):
             r = fila_primer_dato + k
-            fila_label = tabla_pais.loc[label] if label in tabla_pais.index else None
             ws.cell(row=r, column=col_inicio, value=label)
             for col_offset, campo in enumerate(
-                [f"pct_YTD_{anio_actual}", f"pct_YTD_{anio_actual - 1}", "g_l"], start=1
+                [campo_actual, campo_anterior, "g_l"], start=1
             ):
-                valor = float(fila_label[campo]) if fila_label is not None else None
+                valor = valor_de(label, campo)
                 celda_valor = ws.cell(row=r, column=col_inicio + col_offset, value=valor)
                 celda_valor.number_format = "0.0%"
+                if campo == "g_l":
+                    _pintar_gl(celda_valor, valor)
+                else:
+                    _pintar_vs_universal(celda_valor, valor, label, referencia[campo])
 
         for col in range(col_inicio, col_fin + 1):
             ws.column_dimensions[get_column_letter(col)].width = 11
@@ -272,13 +361,14 @@ def _escribir_pagina_pais(ws, country_code: str) -> None:
         .sort_values(["anio", "semana"])
         .reset_index(drop=True)
     )
+    lista_semanas = list(semanas.itertuples(index=False))
     pct_por_celda = {
         (r.anio, r.semana, r.banda, r.label_group): r.pct for r in grid.itertuples(index=False)
     }
 
     ws.cell(row=_MSPAIS_FILA_SEMANA, column=_MSPAIS_COL_LABEL, value="Etiquetas\nde fila").font = negrita
 
-    for j, s in enumerate(semanas.itertuples(index=False)):
+    for j, s in enumerate(lista_semanas):
         col = _MSPAIS_COL_PRIMERA_SEMANA + j
         celda_fecha = ws.cell(row=_MSPAIS_FILA_FECHA, column=col, value=pd.Timestamp(s.chart_date))
         celda_fecha.number_format = "yyyy-mm-dd"
@@ -289,16 +379,31 @@ def _escribir_pagina_pais(ws, country_code: str) -> None:
         celda_semana.alignment = centrado
         ws.column_dimensions[get_column_letter(col)].width = 11
 
+    # Referencia del semáforo: acá el grupo son los 7 sellos de UNA banda en
+    # UNA semana (en el resumen son los 7 sellos del país). Misma regla, ver
+    # _pintar_vs_universal.
+    referencia_por_celda = {
+        (s.anio, s.semana, banda): _referencia_grupo({
+            lab: pct_por_celda.get((s.anio, s.semana, banda, lab))
+            for lab in config.LABEL_GROUPS_MS
+        })
+        for s in lista_semanas
+        for banda in config.BANDAS_MARKET_SHARE
+    }
+
     fila = _MSPAIS_FILA_PRIMER_DATO
     for banda in config.BANDAS_MARKET_SHARE:
         fila_inicio_banda = fila
         for label in config.LABEL_GROUPS_MS:
             ws.cell(row=fila, column=_MSPAIS_COL_LABEL, value=label)
-            for j, s in enumerate(semanas.itertuples(index=False)):
+            for j, s in enumerate(lista_semanas):
                 col = _MSPAIS_COL_PRIMERA_SEMANA + j
                 valor = pct_por_celda.get((s.anio, s.semana, banda, label))
                 celda_valor = ws.cell(row=fila, column=col, value=valor)
                 celda_valor.number_format = "0.0%"
+                _pintar_vs_universal(
+                    celda_valor, valor, label, referencia_por_celda[(s.anio, s.semana, banda)]
+                )
             fila += 1
 
         celda_banda = ws.cell(row=fila_inicio_banda, column=_MSPAIS_COL_BANDA, value=f"Streams\n(%)\nTOP {banda}")
@@ -346,4 +451,3 @@ def generar_reporte(
             _escribir_pagina_pais(ws_pais, country_code)
 
     return output_path
-

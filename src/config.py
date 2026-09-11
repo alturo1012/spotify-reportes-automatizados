@@ -240,6 +240,13 @@ COLOR_SEMAFORO_ROJO = "FFC7CE"
 COLOR_SEMAFORO_AMARILLO = "FFEB9C"
 COLOR_SEMAFORO_VERDE = "C6EFCE"
 
+# Color de LETRA que acompaña a cada uno de esos rellenos en las "Reglas de
+# resaltado de celdas" de Excel. Verificado 1:1 contra el formato condicional
+# real del reporte MS TOP 200 (los dxf de la pestaña "% Market Share").
+COLOR_TEXTO_SEMAFORO_ROJO = "9C0006"
+COLOR_TEXTO_SEMAFORO_AMARILLO = "9C5700"
+COLOR_TEXTO_SEMAFORO_VERDE = "006100"
+
 # Cuántas canciones como máximo se listan en el "listado de canciones" de
 # "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con
 # todas las canciones de una semana (pueden ser 1000+) la hoja queda
