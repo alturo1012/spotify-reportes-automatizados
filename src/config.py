@@ -247,6 +247,39 @@ COLOR_TEXTO_SEMAFORO_ROJO = "9C0006"
 COLOR_TEXTO_SEMAFORO_AMARILLO = "9C5700"
 COLOR_TEXTO_SEMAFORO_VERDE = "006100"
 
+# Semáforo de la POSICIÓN en el listado de canciones de "Resumen Total"
+# (pedido en la reunión del 14/09/2026). Cada posición se escribe en la
+# columna de la banda que le corresponde (una posición 25 va en la columna
+# "top 30", ver chart_semanal._tier_de_posicion), así que el color se define
+# por banda y no por rangos sueltos: así no quedan huecos sin pintar.
+#
+#   banda 10           -> verde   (el mejor tramo)
+#   bandas 30 y 50     -> amarillo
+#   bandas 100 y 200   -> rojo
+#
+# Mismos rellenos y colores de letra del semáforo del Market Share, para que
+# los tres reportes se lean igual.
+COLOR_POSICION_POR_BANDA = {
+    10: (COLOR_SEMAFORO_VERDE, COLOR_TEXTO_SEMAFORO_VERDE),
+    30: (COLOR_SEMAFORO_AMARILLO, COLOR_TEXTO_SEMAFORO_AMARILLO),
+    50: (COLOR_SEMAFORO_AMARILLO, COLOR_TEXTO_SEMAFORO_AMARILLO),
+    100: (COLOR_SEMAFORO_ROJO, COLOR_TEXTO_SEMAFORO_ROJO),
+    200: (COLOR_SEMAFORO_ROJO, COLOR_TEXTO_SEMAFORO_ROJO),
+}
+
+# Tamaños de la pestaña resumen "% Market Share" y de las pestañas por país
+# del reporte de Market Share (pedido en la misma reunión: "que tenga todos
+# los bordes y aumentar un poco el tamaño de la letra y el ancho y largo de
+# las celdas"). El default de Excel es letra 11, alto de fila ~15 y ancho de
+# columna 11: esto sube un punto la letra y un par de puntos el resto -- lo
+# justo para que se lea más cómodo sin que la hoja deje de caber en pantalla.
+MS_FUENTE_TAMANO = 12
+MS_ANCHO_COLUMNA = 13
+MS_ALTO_FILA = 19
+# Gris del borde de la cuadrícula. Más suave que el negro puro: marca la
+# retícula sin competir con los colores del semáforo.
+COLOR_BORDE_MS = "808080"
+
 # Cuántas canciones como máximo se listan en el "listado de canciones" de
 # "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con
 # todas las canciones de una semana (pueden ser 1000+) la hoja queda

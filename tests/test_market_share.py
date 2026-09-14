@@ -6,6 +6,7 @@ Corre con: pytest tests/test_market_share.py -v
 import openpyxl
 import pandas as pd
 import pytest
+from openpyxl.utils import get_column_letter
 
 from src import config, history, market_share
 
@@ -527,3 +528,96 @@ def test_ytd_no_suma_streams_si_hay_un_hueco_en_el_periodo(tmp_path):
     # Si hubiera sumado los streams de la semana 1 daría 0.90; con el hueco
     # usa el promedio del % semanal -> 0.10.
     assert tabla.loc["Universal", "pct_YTD_2026"] == pytest.approx(0.10)
+
+
+# --- cuadrícula y tamaños (reunión 14/09/2026) ---
+
+def _tiene_todos_los_bordes(celda) -> bool:
+    """True si la celda tiene borde en los cuatro lados.
+
+    OJO con las celdas COMBINADAS (el banner del país, la columna de la
+    banda): Excel las dibuja como una sola celda, y openpyxl guarda el borde
+    solo en el perímetro del rango -- la celda de arriba a la izquierda es la
+    que lo lleva completo, y las demás del rango salen sin borde al releer el
+    archivo aunque en Excel se vea el recuadro. Por eso los tests de abajo
+    revisan la celda inicial de cada rango combinado, no todas.
+    """
+    lados = (celda.border.left, celda.border.right, celda.border.top, celda.border.bottom)
+    return all(lado is not None and lado.style for lado in lados)
+
+
+def test_resumen_pct_cuadricula_cada_tabla_de_pais_y_agranda_las_celdas(tmp_path):
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 20.0), ("Sony", 50.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)[config.MS_SHEET_PORCENTAJE]
+
+    # Bloque de Colombia: banner en la fila 4 (combinado B4:E4), subencabezado
+    # en la 6, sellos en las filas 7-13, columnas B a E.
+    assert _tiene_todos_los_bordes(ws.cell(row=4, column=2))
+    for fila in range(6, 14):
+        for col in range(2, 6):
+            assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col)), (fila, col)
+    # La fila en blanco entre el banner y la tabla queda sin bordes.
+    assert not _tiene_todos_los_bordes(ws.cell(row=5, column=2))
+
+    # Letra y celdas un poco más grandes que el default de Excel (11 / ~15).
+    assert ws.cell(row=7, column=2).font.size == config.MS_FUENTE_TAMANO
+    assert ws.cell(row=7, column=3).font.size == config.MS_FUENTE_TAMANO
+    assert ws.column_dimensions["B"].width == config.MS_ANCHO_COLUMNA
+    assert ws.row_dimensions[7].height == config.MS_ALTO_FILA
+
+
+def test_el_semaforo_del_resumen_conserva_el_tamano_de_letra(tmp_path):
+    # Pintar reemplaza la fuente entera: si no se le pasa el tamaño, la
+    # celda coloreada se vuelve más chica que sus vecinas.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 20.0), ("Sony", 50.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    celda_sony = celdas["Sony"][0]
+    assert _color_de(celda_sony) == "ROJO"
+    assert celda_sony.font.size == config.MS_FUENTE_TAMANO
+
+
+def test_pagina_pais_cuadricula_la_rejilla_y_agranda_las_celdas(tmp_path):
+    _sembrar_bandas(tmp_path, [
+        {"anio": 2026, "semana": 1, "chart_date": "2026-01-01", "country_code": "CO",
+         "banda": banda, "label_group": lab, "pct_streams": pct}
+        for banda in config.BANDAS_MARKET_SHARE
+        for lab, pct in (("Universal", 0.30), ("Sony", 0.70))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)["CO"]
+    col_dato = _MSPAIS_PRIMERA_COL_DATO
+
+    # Encabezados (fecha y semana) y el primer bloque de banda (filas 4-10).
+    for fila in (2, 3):
+        assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col_dato)), fila
+    # La columna A va combinada sobre las 7 filas de la banda: su borde vive
+    # en la celda inicial del rango.
+    assert _tiene_todos_los_bordes(ws.cell(row=4, column=1))
+    for fila in range(4, 11):
+        for col in (2, col_dato):
+            assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col)), (fila, col)
+    # La fila en blanco que separa una banda de la siguiente sigue sin bordes.
+    assert not _tiene_todos_los_bordes(ws.cell(row=11, column=col_dato))
+
+    assert ws.cell(row=4, column=2).font.size == config.MS_FUENTE_TAMANO
+    assert ws.cell(row=4, column=col_dato).font.size == config.MS_FUENTE_TAMANO
+    assert ws.column_dimensions[get_column_letter(col_dato)].width == config.MS_ANCHO_COLUMNA
+    assert ws.row_dimensions[4].height == config.MS_ALTO_FILA

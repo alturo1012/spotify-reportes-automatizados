@@ -532,3 +532,68 @@ def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypa
     ws = wb[config.CHART_SHEET_RESUMEN]
     assert ws.cell(row=11, column=2).value == "Fecha Lzto"
     assert ws.cell(row=13, column=2).value is None
+
+
+# --- semáforo de la posición en el listado de canciones (reunión 14/09/2026) ---
+
+def test_pintar_posicion_usa_el_color_de_cada_banda():
+    # Verde el Top 10, amarillo el 30 y el 50, rojo el 100 y el 200.
+    class _Celda:
+        fill = None
+        font = None
+
+    esperado = {
+        10: config.COLOR_SEMAFORO_VERDE,
+        30: config.COLOR_SEMAFORO_AMARILLO,
+        50: config.COLOR_SEMAFORO_AMARILLO,
+        100: config.COLOR_SEMAFORO_ROJO,
+        200: config.COLOR_SEMAFORO_ROJO,
+    }
+    for banda in config.BANDAS_CHART:
+        celda = _Celda()
+        chart_semanal._pintar_posicion(celda, banda)
+        assert str(celda.fill.start_color.rgb)[-6:] == esperado[banda], banda
+
+
+def test_listado_de_canciones_pinta_la_posicion_segun_su_banda(tmp_path):
+    # Tres canciones que caen en tres bandas distintas del mismo país, para
+    # ver los tres colores en la hoja generada.
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO", "CO", "CO"],
+        "chart_date": pd.to_datetime(["2026-06-18"] * 3),
+        "position": [3, 45, 150],          # banda 10, banda 50, banda 200
+        "artist": ["a", "b", "c"],
+        "song_name": ["x", "y", "z"],
+        "stream_count": [3_000_000, 2_000_000, 1_000_000],
+        "label_group": ["Universal"] * 3,
+        "label_name": ["UMG"] * 3,
+        "region": ["Latin"] * 3,
+    })
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    ws = openpyxl.load_workbook(salida)[config.CHART_SHEET_RESUMEN]
+
+    def color(celda):
+        if celda.fill is None or celda.fill.fill_type is None:
+            return None
+        return str(getattr(celda.fill.start_color, "rgb", ""))[-6:]
+
+    # El bloque de Colombia empieza en la columna 5; una columna por banda.
+    col_top10, col_top50, col_top200 = 5, 7, 9
+    # Las canciones salen ordenadas por posición (todas en un solo país), así
+    # que la primera fila del listado (13) es la posición 3.
+    assert ws.cell(row=13, column=col_top10).value == 3
+    assert color(ws.cell(row=13, column=col_top10)) == config.COLOR_SEMAFORO_VERDE
+    assert ws.cell(row=14, column=col_top50).value == 45
+    assert color(ws.cell(row=14, column=col_top50)) == config.COLOR_SEMAFORO_AMARILLO
+    assert ws.cell(row=15, column=col_top200).value == 150
+    assert color(ws.cell(row=15, column=col_top200)) == config.COLOR_SEMAFORO_ROJO
+    # Una celda vacía del mismo bloque no se pinta.
+    assert color(ws.cell(row=13, column=col_top50)) is None

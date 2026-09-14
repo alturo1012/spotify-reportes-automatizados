@@ -122,6 +122,24 @@ def _tier_de_posicion(posicion: int):
     return None
 
 
+def _pintar_posicion(celda, banda: int) -> None:
+    """Pinta la celda de una posición con el color de su banda: verde el Top
+    10, amarillo el 30 y el 50, rojo el 100 y el 200 (ver
+    config.COLOR_POSICION_POR_BANDA).
+
+    Se pinta por BANDA y no por rangos de posición porque cada posición ya
+    se escribe en la columna de su banda -- una posición 25 vive en la
+    columna "top 30", así que preguntarle a la banda es preguntarle a la
+    columna donde está la celda, y ningún número queda sin color.
+    """
+    colores = config.COLOR_POSICION_POR_BANDA.get(banda)
+    if colores is None:
+        return
+    relleno, texto = colores
+    celda.fill = PatternFill(start_color=relleno, end_color=relleno, fill_type="solid")
+    celda.font = Font(color=texto)
+
+
 def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     """Listado de canciones de la semana que se acaba de cargar (NO es
     histórico -- cambia por completo cada vez que se sube una fuente nueva,
@@ -506,7 +524,10 @@ def _escribir_listado_canciones(
                 nombre_columna = f"{pais}_top{banda}"
                 valor = getattr(fila, nombre_columna, None)
                 if pd.notna(valor):
-                    ws.cell(row=r, column=col_inicio + i_banda, value=int(valor))
+                    celda_posicion = ws.cell(
+                        row=r, column=col_inicio + i_banda, value=int(valor)
+                    )
+                    _pintar_posicion(celda_posicion, banda)
 
         ws.cell(row=r, column=col_paises, value=int(fila.paises_presente))
         ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))

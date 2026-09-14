@@ -42,7 +42,7 @@ claude/plan_fusion_paso_a_paso.md.
 """
 from pathlib import Path
 import pandas as pd
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from . import config, history
@@ -297,33 +297,57 @@ def _referencia_grupo(valores_por_label: dict):
     return {"universal": valores_por_label.get("Universal"), "maximo": max(presentes)}
 
 
-def _pintar(celda, fondo: str, texto: str) -> None:
+def _pintar(celda, fondo: str, texto: str, tamano: int = None) -> None:
+    """Pinta relleno + color de letra. `tamano` es opcional porque pintar
+    reemplaza la fuente entera: si la celda ya tenía un tamaño distinto del
+    default (las hojas de este reporte lo suben, ver config.MS_FUENTE_TAMANO)
+    hay que volver a decirlo acá o se perdería al pintar. Sin `tamano`,
+    openpyxl deja el tamaño por defecto -- que es justo lo que necesita el
+    BMAT, que reusa estas funciones sin cambiar tamaños.
+    """
     celda.fill = PatternFill(start_color=fondo, end_color=fondo, fill_type="solid")
-    celda.font = Font(color=texto)
+    celda.font = Font(color=texto, size=tamano)
 
 
-def _pintar_vs_universal(celda, valor, label: str, referencia) -> None:
+def _pintar_vs_universal(celda, valor, label: str, referencia, tamano: int = None) -> None:
     """Rojo si le gana a Universal; verde en la celda de Universal si lidera."""
     if valor is None or referencia is None or referencia["universal"] is None:
         return
     if label == "Universal":
         if valor < referencia["maximo"]:
             return
-        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE)
+        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE, tamano)
     elif valor > referencia["universal"]:
-        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO)
+        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO, tamano)
 
 
-def _pintar_gl(celda, valor) -> None:
+def _pintar_gl(celda, valor, tamano: int = None) -> None:
     """Columna G/L del resumen: verde si ganó, rojo si perdió, amarillo si igual."""
     if valor is None:
         return
     if valor > 0:
-        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE)
+        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE, tamano)
     elif valor < 0:
-        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO)
+        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO, tamano)
     else:
-        _pintar(celda, config.COLOR_SEMAFORO_AMARILLO, config.COLOR_TEXTO_SEMAFORO_AMARILLO)
+        _pintar(celda, config.COLOR_SEMAFORO_AMARILLO, config.COLOR_TEXTO_SEMAFORO_AMARILLO, tamano)
+
+
+def _borde_cuadricula() -> Border:
+    """Borde fino en los cuatro lados -- la "cuadrícula" que se pidió en la
+    reunión del 14/09/2026, tanto para las tablas de país del resumen como
+    para las pestañas por país.
+    """
+    lado = Side(style="thin", color=config.COLOR_BORDE_MS)
+    return Border(left=lado, right=lado, top=lado, bottom=lado)
+
+
+def _cuadricular(ws, fila_inicio: int, fila_fin: int, col_inicio: int, col_fin: int,
+                 borde: Border) -> None:
+    """Le pone el borde a todas las celdas del rectángulo indicado."""
+    for r in range(fila_inicio, fila_fin + 1):
+        for c in range(col_inicio, col_fin + 1):
+            ws.cell(row=r, column=c).border = borde
 
 
 def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int,
@@ -334,12 +358,15 @@ def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int,
     chart_semanal.py: acá hace falta control celda por celda (banners
     combinados, freeze_panes) que `.to_excel(...)` no ofrece.
     """
-    negrita_banner = Font(bold=True, color=config.COLOR_BANNER_MS_TEXTO)
+    tamano = config.MS_FUENTE_TAMANO
+    negrita_banner = Font(bold=True, size=tamano, color=config.COLOR_BANNER_MS_TEXTO)
     relleno_banner = PatternFill(
         start_color=config.COLOR_BANNER_MS_FONDO, end_color=config.COLOR_BANNER_MS_FONDO, fill_type="solid"
     )
     centrado = Alignment(horizontal="center", vertical="center")
-    negrita = Font(bold=True)
+    negrita = Font(bold=True, size=tamano)
+    normal = Font(size=tamano)
+    borde = _borde_cuadricula()
 
     ancho_total_columnas = _MS_BLOQUES_POR_FILA * (_MS_COLS_POR_BLOQUE + 1) - 1
     columna_final = _MS_COL_INICIAL + ancho_total_columnas - 1
@@ -398,21 +425,35 @@ def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int,
 
         for k, label in enumerate(config.ORDEN_LABELS_MS_RESUMEN):
             r = fila_primer_dato + k
-            ws.cell(row=r, column=col_inicio, value=label)
+            ws.cell(row=r, column=col_inicio, value=label).font = normal
             for col_offset, campo in enumerate(
                 [campo_actual, campo_anterior, "g_l"], start=1
             ):
                 valor = valor_de(label, campo)
                 celda_valor = ws.cell(row=r, column=col_inicio + col_offset, value=valor)
                 celda_valor.number_format = "0.0%"
+                celda_valor.font = normal
                 if campo == "g_l":
-                    _pintar_gl(celda_valor, valor)
+                    _pintar_gl(celda_valor, valor, tamano)
                 else:
-                    _pintar_vs_universal(celda_valor, valor, label, referencia[campo])
+                    _pintar_vs_universal(celda_valor, valor, label, referencia[campo], tamano)
+
+        # La cuadrícula va desde el encabezado azul del país hasta la última
+        # fila de sello: el bloque completo, como se pidió. La fila en blanco
+        # que queda arriba del subencabezado NO se cuadricula -- es la
+        # separación visual entre el banner y la tabla.
+        _cuadricular(ws, fila_header, fila_header, col_inicio, col_fin, borde)
+        _cuadricular(
+            ws, fila_subheader, fila_primer_dato + len(config.ORDEN_LABELS_MS_RESUMEN) - 1,
+            col_inicio, col_fin, borde,
+        )
 
         for col in range(col_inicio, col_fin + 1):
-            ws.column_dimensions[get_column_letter(col)].width = 11
+            ws.column_dimensions[get_column_letter(col)].width = config.MS_ANCHO_COLUMNA
         ws.column_dimensions[get_column_letter(col_fin + 1)].width = 2  # separadora
+
+        for r in range(fila_header, fila_primer_dato + len(config.ORDEN_LABELS_MS_RESUMEN)):
+            ws.row_dimensions[r].height = config.MS_ALTO_FILA
 
     ws.freeze_panes = "A4"
 
@@ -441,15 +482,18 @@ def _escribir_pagina_pais(ws, country_code: str, bandas: pd.DataFrame = None) ->
     columnas de datos (solo encabezados) -- se va llenando sola a medida
     que se cargan bases nuevas.
     """
-    negrita = Font(bold=True)
+    tamano = config.MS_FUENTE_TAMANO
+    negrita = Font(bold=True, size=tamano)
+    normal = Font(size=tamano)
     centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    borde = _borde_cuadricula()
 
     nombre_visible = config.NOMBRE_PAIS_MS_RESUMEN.get(country_code, country_code)
     celda_titulo = ws.cell(
         row=_MSPAIS_FILA_TITULO, column=_MSPAIS_COL_BANDA,
         value=f"{nombre_visible} - % Market Share por banda (Streams)",
     )
-    celda_titulo.font = Font(bold=True, size=12)
+    celda_titulo.font = Font(bold=True, size=tamano + 2)
 
     grid = calcular_streams_pct_grid(country_code, bandas=bandas)
     semanas = (
@@ -474,7 +518,7 @@ def _escribir_pagina_pais(ws, country_code: str, bandas: pd.DataFrame = None) ->
         celda_semana = ws.cell(row=_MSPAIS_FILA_SEMANA, column=col, value=int(s.semana))
         celda_semana.font = negrita
         celda_semana.alignment = centrado
-        ws.column_dimensions[get_column_letter(col)].width = 11
+        ws.column_dimensions[get_column_letter(col)].width = config.MS_ANCHO_COLUMNA
 
     # Referencia del semáforo: acá el grupo son los 7 sellos de UNA banda en
     # UNA semana (en el resumen son los 7 sellos del país). Misma regla, ver
@@ -488,18 +532,22 @@ def _escribir_pagina_pais(ws, country_code: str, bandas: pd.DataFrame = None) ->
         for banda in config.BANDAS_MARKET_SHARE
     }
 
+    ultima_columna = _MSPAIS_COL_PRIMERA_SEMANA + len(lista_semanas) - 1
+
     fila = _MSPAIS_FILA_PRIMER_DATO
     for banda in config.BANDAS_MARKET_SHARE:
         fila_inicio_banda = fila
         for label in config.LABEL_GROUPS_MS:
-            ws.cell(row=fila, column=_MSPAIS_COL_LABEL, value=label)
+            ws.cell(row=fila, column=_MSPAIS_COL_LABEL, value=label).font = normal
             for j, s in enumerate(lista_semanas):
                 col = _MSPAIS_COL_PRIMERA_SEMANA + j
                 valor = pct_por_celda.get((s.anio, s.semana, banda, label))
                 celda_valor = ws.cell(row=fila, column=col, value=valor)
                 celda_valor.number_format = "0.0%"
+                celda_valor.font = normal
                 _pintar_vs_universal(
-                    celda_valor, valor, label, referencia_por_celda[(s.anio, s.semana, banda)]
+                    celda_valor, valor, label, referencia_por_celda[(s.anio, s.semana, banda)],
+                    tamano,
                 )
             fila += 1
 
@@ -510,10 +558,31 @@ def _escribir_pagina_pais(ws, country_code: str, bandas: pd.DataFrame = None) ->
         )
         celda_banda.font = negrita
         celda_banda.alignment = centrado
+
+        # Cuadrícula de este bloque de banda: la columna de la banda, la de
+        # los sellos y todas las semanas. La fila en blanco que va después
+        # queda sin borde, para que se siga viendo la separación entre
+        # bandas.
+        _cuadricular(
+            ws, fila_inicio_banda, fila - 1,
+            _MSPAIS_COL_BANDA, max(ultima_columna, _MSPAIS_COL_LABEL), borde,
+        )
+        for r in range(fila_inicio_banda, fila):
+            ws.row_dimensions[r].height = config.MS_ALTO_FILA
+
         fila += 1  # fila en blanco separadora entre bandas, igual que la plantilla real
 
-    ws.column_dimensions[get_column_letter(_MSPAIS_COL_BANDA)].width = 12
-    ws.column_dimensions[get_column_letter(_MSPAIS_COL_LABEL)].width = 14
+    # Los dos encabezados de arriba (fecha y n° de semana) también van
+    # dentro de la cuadrícula.
+    _cuadricular(
+        ws, _MSPAIS_FILA_FECHA, _MSPAIS_FILA_SEMANA,
+        _MSPAIS_COL_LABEL, max(ultima_columna, _MSPAIS_COL_LABEL), borde,
+    )
+    ws.row_dimensions[_MSPAIS_FILA_FECHA].height = config.MS_ALTO_FILA
+    ws.row_dimensions[_MSPAIS_FILA_SEMANA].height = config.MS_ALTO_FILA
+
+    ws.column_dimensions[get_column_letter(_MSPAIS_COL_BANDA)].width = 14
+    ws.column_dimensions[get_column_letter(_MSPAIS_COL_LABEL)].width = 16
 
     ws.freeze_panes = ws.cell(row=_MSPAIS_FILA_PRIMER_DATO, column=_MSPAIS_COL_PRIMERA_SEMANA).coordinate
 
