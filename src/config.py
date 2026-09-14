@@ -45,7 +45,15 @@ OUTPUT_DIR = ROOT_DIR / "data" / "output"
 # proyecto no le escribe nada.
 RELEASE_DATE_DB = ROOT_DIR / "data" / "release_date.db"
 
-# Columnas tal cual vienen en la hoja "Consulta1" de la fuente BQ
+# Nombres posibles de la hoja de datos dentro del archivo fuente de
+# BigQuery, en orden de preferencia. Venía siempre como "Consulta1", pero
+# desde la semana 36 de 2026 empezó a llegar como "spotify" -- y no hay
+# garantía de cuál va a venir la próxima vez, así que se aceptan las dos
+# (ver load_data.elegir_hoja; la comparación ignora mayúsculas y espacios).
+# Si aparece un nombre nuevo, basta con agregarlo a esta lista.
+HOJAS_FUENTE = ["Consulta1", "spotify"]
+
+# Columnas tal cual vienen en la hoja de datos de la fuente BQ
 SOURCE_COLUMNS = [
     "country",
     "country_alt",
@@ -276,9 +284,11 @@ COLOR_POSICION_POR_BANDA = {
 MS_FUENTE_TAMANO = 12
 MS_ANCHO_COLUMNA = 13
 MS_ALTO_FILA = 19
-# Gris del borde de la cuadrícula. Más suave que el negro puro: marca la
-# retícula sin competir con los colores del semáforo.
-COLOR_BORDE_MS = "808080"
+# Gris del borde de la cuadrícula (la usan los dos reportes: el Market Share
+# y, desde la reunión del 14/09/2026, también el Chart Semanal). Más suave
+# que el negro puro: marca la retícula sin competir con los colores del
+# semáforo.
+COLOR_BORDE_CUADRICULA = "808080"
 
 # Cuántas canciones como máximo se listan en el "listado de canciones" de
 # "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con

@@ -247,6 +247,10 @@ _MS_BLOQUES_POR_FILA = 4
 _MS_FILAS_POR_BLOQUE = 11  # banner + blanco + subencabezado + 7 sellos + blanco
 _MS_FILA_BANNER_TOP200 = 2
 _MS_FILA_PRIMER_BLOQUE = 4
+# Semana y fecha de corte, en el rincón de arriba a la izquierda (donde el
+# archivo original lleva el logo de Spotify).
+_MS_FILA_SEMANA_TITULO = 2
+_MS_FILA_FECHA_TITULO = 3
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +342,7 @@ def _borde_cuadricula() -> Border:
     reunión del 14/09/2026, tanto para las tablas de país del resumen como
     para las pestañas por país.
     """
-    lado = Side(style="thin", color=config.COLOR_BORDE_MS)
+    lado = Side(style="thin", color=config.COLOR_BORDE_CUADRICULA)
     return Border(left=lado, right=lado, top=lado, bottom=lado)
 
 
@@ -350,8 +354,38 @@ def _cuadricular(ws, fila_inicio: int, fila_fin: int, col_inicio: int, col_fin: 
             ws.cell(row=r, column=c).border = borde
 
 
+def texto_week_ending(fecha) -> str:
+    """Fecha de corte con el mismo formato que usa el listado de canciones
+    del Chart Semanal: "Week Ending - 13 ago, 2026"."""
+    fecha = pd.Timestamp(fecha)
+    return f"Week Ending - {fecha.day:02d} {config.MESES_ES_ABREV[fecha.month]}, {fecha.year}"
+
+
+def _escribir_encabezado_semana(ws, hasta_semana: int, fecha, columna_final: int,
+                                negrita, centrado) -> None:
+    """Semana y fecha de corte del reporte, arriba a la izquierda -- donde el
+    archivo original tiene el logo de Spotify (pedido de la reunión: el
+    logo no, la semana y la fecha sí).
+
+    La semana es la última del histórico, que es hasta dónde llega el YTD de
+    la hoja; la fecha sale de la fuente que se acaba de cargar. Si no hay
+    fecha (se generó sin fuente), se escribe solo la semana.
+    """
+    celda_semana = ws.cell(row=_MS_FILA_SEMANA_TITULO, column=_MS_COL_INICIAL,
+                           value=f"Semana {hasta_semana}")
+    celda_fecha = ws.cell(row=_MS_FILA_FECHA_TITULO, column=_MS_COL_INICIAL,
+                          value=texto_week_ending(fecha) if fecha is not None else None)
+    for celda, fila in ((celda_semana, _MS_FILA_SEMANA_TITULO),
+                        (celda_fecha, _MS_FILA_FECHA_TITULO)):
+        ws.merge_cells(start_row=fila, start_column=_MS_COL_INICIAL,
+                       end_row=fila, end_column=columna_final)
+        celda.font = negrita
+        celda.alignment = centrado
+
+
 def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int,
-                          streams: pd.DataFrame = None, bandas: pd.DataFrame = None) -> None:
+                          streams: pd.DataFrame = None, bandas: pd.DataFrame = None,
+                          fecha=None) -> None:
     """Escribe la pestaña resumen "% Market Share" como una cuadrícula de
     tablas por país (ver constantes _MS_* arriba) -- se arma directo con
     openpyxl (no con `.to_excel(...)`) por el mismo motivo que en
@@ -370,14 +404,25 @@ def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int,
 
     ancho_total_columnas = _MS_BLOQUES_POR_FILA * (_MS_COLS_POR_BLOQUE + 1) - 1
     columna_final = _MS_COL_INICIAL + ancho_total_columnas - 1
-    celda_top200 = ws.cell(row=_MS_FILA_BANNER_TOP200, column=_MS_COL_INICIAL, value="TOP 200 WEEKLY MARKET SHARE")
+
+    # El banner arranca en el SEGUNDO bloque de columnas para dejar libre el
+    # rincón de arriba a la izquierda, que es donde el reporte original tiene
+    # el logo de Spotify y debajo la fecha de corte. Acá va la semana y la
+    # fecha (el logo no se pone, lo pidió así el usuario).
+    columna_banner = _MS_COL_INICIAL + (_MS_COLS_POR_BLOQUE + 1)
+    celda_top200 = ws.cell(row=_MS_FILA_BANNER_TOP200, column=columna_banner,
+                           value="TOP 200 WEEKLY MARKET SHARE")
     ws.merge_cells(
-        start_row=_MS_FILA_BANNER_TOP200, start_column=_MS_COL_INICIAL,
+        start_row=_MS_FILA_BANNER_TOP200, start_column=columna_banner,
         end_row=_MS_FILA_BANNER_TOP200, end_column=columna_final,
     )
     celda_top200.font = Font(bold=True, size=14, color=config.COLOR_BANNER_MS_TEXTO)
     celda_top200.fill = relleno_banner
     celda_top200.alignment = centrado
+
+    _escribir_encabezado_semana(
+        ws, hasta_semana, fecha, columna_banner - 2, negrita, centrado
+    )
 
     etiqueta_actual = f"YTD {str(anio_actual)[-2:]}"
     etiqueta_anterior = f"YTD {str(anio_actual - 1)[-2:]}"
@@ -626,7 +671,8 @@ def generar_reporte(
         bandas = history.cargar_ms_band_label_weekly()
 
         ws_resumen = writer.book.create_sheet(config.MS_SHEET_PORCENTAJE)
-        _escribir_resumen_pct(ws_resumen, anio_actual, hasta_semana, streams=streams, bandas=bandas)
+        _escribir_resumen_pct(ws_resumen, anio_actual, hasta_semana,
+                              streams=streams, bandas=bandas, fecha=fecha)
         for country_code in config.PAISES_MS:
             ws_pais = writer.book.create_sheet(country_code)
             _escribir_pagina_pais(ws_pais, country_code, bandas=bandas)

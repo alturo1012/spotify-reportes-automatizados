@@ -160,3 +160,26 @@ def test_no_avisa_en_la_primera_semana_del_ano(tmp_path):
     history.seed_historico(chart_csv, ms_csv)
 
     assert main.revisar_historico(pd.Timestamp("2027-01-07")) is None
+
+
+def test_avisa_en_la_ventana_cuando_la_fecha_ya_estaba_cargada(tmp_path):
+    # El aviso existía, pero solo por consola -- y el .exe se empaqueta sin
+    # consola. Resultado: el usuario generaba "la semana 34", el archivo traía
+    # una fecha ya cargada, la semana no se agregaba y los reportes salían
+    # hasta la semana anterior sin que nada lo dijera.
+    history.seed_historico(*_seed_vacio())
+    fuente = _fuente_minima(tmp_path)
+
+    main.main(["--fuente", str(fuente), "--semana", "25"])   # la carga
+    avisos = main.main(["--fuente", str(fuente), "--semana", "26"])  # misma fecha
+
+    assert any("ya estaba" in a.lower() for a in avisos)
+    assert any("chart_date" in a for a in avisos)
+
+
+def test_ultima_semana_guardada_reporta_hasta_donde_llega_el_historico(tmp_path):
+    history.seed_historico(*_seed_vacio())
+    assert main.ultima_semana_guardada(2026) == "ninguna"
+
+    main.main(["--fuente", str(_fuente_minima(tmp_path)), "--semana", "25"])
+    assert main.ultima_semana_guardada(2026) == 1

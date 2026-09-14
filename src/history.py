@@ -376,6 +376,31 @@ def cargar_ms_band_label_weekly() -> pd.DataFrame:
         conn.close()
 
 
+def ultima_semana_cargada():
+    """(anio, semana, chart_date) de la última semana que hay en el
+    histórico, o None si todavía no hay ninguna.
+
+    Se mira `ms_band_label_weekly` porque es la tabla que avanza una fila por
+    semana cargada y guarda la fecha de corte -- es la que alimenta las
+    pestañas por país, o sea justo lo que el usuario ve al final del reporte.
+
+    La usa la ventana para mostrar, antes de generar nada, hasta dónde llega
+    el histórico: así se nota de una si la base está vacía o si la semana
+    que se acaba de cargar realmente entró.
+    """
+    conn = _conectar()
+    try:
+        fila = conn.execute(
+            "SELECT anio, semana, chart_date FROM ms_band_label_weekly "
+            "ORDER BY anio DESC, semana DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if fila is None:
+        return None
+    return int(fila[0]), int(fila[1]), fila[2]
+
+
 def append_semana_tracks(df_semana: pd.DataFrame) -> None:
     """Guarda el detalle track por track (posición, artista, canción, país)
     de la semana que trae `df_semana` en `chart_track_weekly`, continuando

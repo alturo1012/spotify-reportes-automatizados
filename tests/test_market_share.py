@@ -164,7 +164,9 @@ def test_escribir_resumen_pct_arma_bloques_por_pais_con_freeze_panes(tmp_path):
     ws = wb[config.MS_SHEET_PORCENTAJE]
 
     assert ws.freeze_panes == "A4"
-    assert ws.cell(row=2, column=2).value == "TOP 200 WEEKLY MARKET SHARE"
+    # El banner arranca en el segundo bloque (columna G): en el rincón de la
+    # izquierda van la semana y la fecha de corte.
+    assert ws.cell(row=2, column=7).value == "TOP 200 WEEKLY MARKET SHARE"
     assert ws.cell(row=4, column=2).value == "COLOMBIA"  # bloque 1 -> columna B
     assert ws.cell(row=4, column=7).value == "PERU"  # bloque 2 -> columna G
     assert ws.cell(row=4, column=17).value == "DOMINICANA"  # bloque 4 -> columna Q (orden nuevo)
@@ -621,3 +623,24 @@ def test_pagina_pais_cuadricula_la_rejilla_y_agranda_las_celdas(tmp_path):
     assert ws.cell(row=4, column=col_dato).font.size == config.MS_FUENTE_TAMANO
     assert ws.column_dimensions[get_column_letter(col_dato)].width == config.MS_ANCHO_COLUMNA
     assert ws.row_dimensions[4].height == config.MS_ALTO_FILA
+
+
+def test_resumen_pct_encabeza_con_la_semana_y_la_fecha_de_corte(tmp_path):
+    # Pedido de la reunión del 14/09/2026: donde el archivo original tiene el
+    # logo de Spotify, acá van la semana y la fecha (el logo no).
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": "Universal",
+         "streams_top200": 10.0, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(
+        _fuente_minima_ms(tmp_path, chart_date="2026-08-13"), salida,
+        guardar_en_historico=False,
+    )
+
+    ws = openpyxl.load_workbook(salida)[config.MS_SHEET_PORCENTAJE]
+    assert ws.cell(row=2, column=2).value == "Semana 1"
+    assert ws.cell(row=3, column=2).value == "Week Ending - 13 ago, 2026"
+    # y no se pisan con el banner, que arranca en la columna G
+    assert ws.cell(row=2, column=7).value == "TOP 200 WEEKLY MARKET SHARE"

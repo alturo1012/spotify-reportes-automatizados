@@ -597,3 +597,63 @@ def test_listado_de_canciones_pinta_la_posicion_segun_su_banda(tmp_path):
     assert color(ws.cell(row=15, column=col_top200)) == config.COLOR_SEMAFORO_ROJO
     # Una celda vacía del mismo bloque no se pinta.
     assert color(ws.cell(row=13, column=col_top50)) is None
+
+
+# --- cuadrícula del Chart Semanal (reunión 14/09/2026) ---
+
+def _tiene_todos_los_bordes(celda) -> bool:
+    lados = (celda.border.left, celda.border.right, celda.border.top, celda.border.bottom)
+    return all(lado is not None and lado.style for lado in lados)
+
+
+def test_resumen_total_y_detalle_tracks_salen_en_cuadricula(tmp_path):
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO",
+         "banda": 10, "conteo_universal": 1},
+    ]).to_csv(chart_csv, index=False)
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"],
+        "chart_date": pd.to_datetime(["2026-06-18"]),
+        "position": [1], "artist": ["a"], "song_name": ["x"],
+        "stream_count": [1_000_000], "label_group": ["Universal"],
+        "label_name": ["UMG"], "region": ["Latin"],
+    })
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.CHART_SHEET_RESUMEN]
+    # Serie histórica. Ojo con las celdas combinadas: en la fila 5 las tres
+    # columnas de la izquierda y el nombre del país llevan el borde en su
+    # celda inicial, y el resto del rango sale sin borde al releer (así
+    # guarda openpyxl los rangos combinados; en Excel se ve el recuadro).
+    for col in (1, 2, 3, 5):
+        assert _tiene_todos_los_bordes(ws.cell(row=5, column=col)), col
+    for col in (5, 9):                       # fila de bandas (10..200) de CO
+        assert _tiene_todos_los_bordes(ws.cell(row=6, column=col)), col
+    for fila in (7, 8):                      # semana sembrada y semana nueva
+        for col in (1, 2, 3, 5, 9):
+            assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col)), (fila, col)
+    # La columna separadora entre bloques de país queda SIN borde.
+    assert not _tiene_todos_los_bordes(ws.cell(row=7, column=4))
+    assert not _tiene_todos_los_bordes(ws.cell(row=7, column=10))
+
+    # Listado de canciones: encabezados y la fila de la canción.
+    fila_titulo = next(r for r in range(1, ws.max_row + 1)
+                       if str(ws.cell(row=r, column=1).value or "").startswith("Week Ending"))
+    for col in (1, 2, 3, 5):                 # encabezado (combinado hacia abajo)
+        assert _tiene_todos_los_bordes(ws.cell(row=fila_titulo + 1, column=col)), col
+    assert _tiene_todos_los_bordes(ws.cell(row=fila_titulo + 2, column=5))  # bandas
+    for col in (1, 2, 3, 5):                 # primera canción
+        assert _tiene_todos_los_bordes(ws.cell(row=fila_titulo + 3, column=col)), col
+
+    # Detalle Tracks: posición + países, sin separadoras.
+    det = wb[config.CHART_SHEET_DETALLE]
+    for fila in (2, 3):
+        for col in (1, 2):
+            assert _tiene_todos_los_bordes(det.cell(row=fila, column=col)), (fila, col)

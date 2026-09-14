@@ -23,7 +23,7 @@ nada más: no tiene sembrado retroactivo de semanas anteriores a este cambio
 """
 from pathlib import Path
 import pandas as pd
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from . import config, history, spotify_release_dates
@@ -120,6 +120,34 @@ def _tier_de_posicion(posicion: int):
         if posicion <= banda:
             return banda
     return None
+
+
+def _borde_cuadricula():
+    """Borde fino en los cuatro lados, igual al del Market Share."""
+    lado = Side(style="thin", color=config.COLOR_BORDE_CUADRICULA)
+    return Border(left=lado, right=lado, top=lado, bottom=lado)
+
+
+def _cuadricular(ws, filas, columnas, borde) -> None:
+    """Le pone el borde a todas las celdas que cruzan `filas` x `columnas`.
+
+    Recibe las columnas como lista y no como rango porque entre bloque y
+    bloque de país hay una columna separadora angosta que NO debe llevar
+    borde: si se cuadriculara, el separador se leería como una columna vacía
+    de la tabla en vez de como el espacio entre dos países.
+    """
+    for r in filas:
+        for c in columnas:
+            ws.cell(row=r, column=c).border = borde
+
+
+def _columnas_de_datos(columna_inicio_por_pais: dict) -> list:
+    """Las columnas que forman la cuadrícula: las tres de la izquierda más
+    las 5 bandas de cada país, sin las separadoras."""
+    columnas = [_COL_ANIO, _COL_MES, _COL_SEMANA]
+    for col_inicio in columna_inicio_por_pais.values():
+        columnas.extend(range(col_inicio, col_inicio + len(config.BANDAS_CHART)))
+    return columnas
 
 
 def _pintar_posicion(celda, banda: int) -> None:
@@ -405,6 +433,17 @@ def _escribir_resumen_total(
 
     ws.freeze_panes = f"{get_column_letter(_COL_PRIMER_PAIS)}{_FILA_PRIMER_DATO}"
 
+    # Cuadrícula de la serie histórica: desde la fila de encabezados de país
+    # hasta la última semana. Pedido de la reunión del 14/09/2026, para que
+    # este reporte se lea igual que el Market Share.
+    if len(resumen):
+        _cuadricular(
+            ws,
+            range(_FILA_HEADER_PAIS, _FILA_PRIMER_DATO + len(resumen)),
+            _columnas_de_datos(columna_inicio_por_pais),
+            _borde_cuadricula(),
+        )
+
     ultima_fila_historica = _FILA_PRIMER_DATO + max(len(resumen) - 1, 0)
     fila_listado = ultima_fila_historica + _FILAS_ANTES_DE_LISTADO + 1
     _escribir_listado_canciones(
@@ -532,6 +571,15 @@ def _escribir_listado_canciones(
         ws.cell(row=r, column=col_paises, value=int(fila.paises_presente))
         ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))
 
+    # Misma cuadrícula que la serie histórica, más las dos columnas del final
+    # (N° Países y Suma Posiciones).
+    _cuadricular(
+        ws,
+        range(fila_header_pais, fila_primer_dato + len(listado)),
+        _columnas_de_datos(columna_inicio_por_pais) + [col_paises, col_suma],
+        _borde_cuadricula(),
+    )
+
 
 # Layout de "Detalle Tracks": posición (1-200) fija a la izquierda y un
 # país por columna, con la canción que ocupa esa posición en ese país esa
@@ -615,6 +663,15 @@ def _escribir_detalle_tracks(ws, df_semana: pd.DataFrame, tabla: pd.DataFrame) -
                 ws.cell(row=r, column=_DETALLE_COL_PRIMER_PAIS + j, value=valor)
 
     ws.freeze_panes = f"{get_column_letter(_DETALLE_COL_PRIMER_PAIS)}{_DETALLE_FILA_PRIMER_DATO}"
+
+    # Acá no hay columnas separadoras: la cuadrícula es el rectángulo entero,
+    # desde la columna de posición hasta el último país.
+    _cuadricular(
+        ws,
+        range(_DETALLE_FILA_HEADER_PAIS, _DETALLE_FILA_PRIMER_DATO + len(tabla)),
+        range(_DETALLE_COL_POSICION, _DETALLE_COL_PRIMER_PAIS + len(columnas_pais)),
+        _borde_cuadricula(),
+    )
 
 
 def generar_reporte(

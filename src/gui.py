@@ -23,8 +23,31 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
-from . import chart_semanal, config
+import pandas as pd
+
+from . import chart_semanal, config, history
 from . import main as main_module
+
+
+def texto_ultima_semana() -> str:
+    """Una línea para la ventana con hasta dónde llega el histórico.
+
+    Se muestra al abrir y se actualiza al terminar de generar. Nació de un
+    problema real: cuando el archivo fuente traía una fecha ya cargada, la
+    semana no se agregaba y los reportes salían hasta la semana anterior --
+    y no había forma de darse cuenta sin abrir el Excel. Con esto se ve
+    antes y después, en la misma ventana.
+    """
+    ultima = history.ultima_semana_cargada()
+    if ultima is None:
+        return "Histórico VACÍO: no hay ninguna semana cargada."
+    anio, semana, chart_date = ultima
+    try:
+        fecha = pd.Timestamp(chart_date)
+        legible = f"{fecha.day:02d} {config.MESES_ES_ABREV[fecha.month]} {fecha.year}"
+    except (ValueError, TypeError):  # una fecha rara no debería tumbar la ventana
+        legible = str(chart_date)
+    return f"Última semana cargada: {semana} de {anio}  ({legible})"
 
 
 def generar(fuente_path: str, semana: str):
@@ -56,7 +79,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Reportes Spotify Latam")
-        self.geometry("560x240")
+        self.geometry("560x280")
         self.resizable(False, False)
 
         self.fuente_var = tk.StringVar()
@@ -69,8 +92,18 @@ class App(tk.Tk):
         # self.after -- ese sí programado siempre desde el hilo principal.
         self._resultado_queue: "queue.Queue" = queue.Queue()
 
+        # Estado del histórico, arriba de todo: es el contexto con el que uno
+        # decide qué archivo cargar (ver texto_ultima_semana).
+        self.historico_var = tk.StringVar()
+        self.label_historico = tk.Label(
+            self, textvariable=self.historico_var, anchor="w", justify="left",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.label_historico.pack(anchor="w", padx=14, pady=(14, 0))
+        self._refrescar_historico()
+
         tk.Label(self, text="1. Elige el archivo fuente de la semana (el Excel de BigQuery):").pack(
-            anchor="w", padx=14, pady=(18, 4)
+            anchor="w", padx=14, pady=(14, 4)
         )
         frame_fuente = tk.Frame(self)
         frame_fuente.pack(fill="x", padx=14)
@@ -94,6 +127,13 @@ class App(tk.Tk):
         tk.Label(self, textvariable=self.estado_var, fg="#555", wraplength=520, justify="left").pack(
             padx=14
         )
+
+    def _refrescar_historico(self) -> None:
+        texto = texto_ultima_semana()
+        self.historico_var.set(texto)
+        # En rojo cuando no hay nada cargado: ahí los reportes saldrían con
+        # una sola fila de historia.
+        self.label_historico.config(fg="#C00000" if "VACÍO" in texto else "#1D7A3E")
 
     def _elegir_archivo(self):
         ruta = filedialog.askopenfilename(
@@ -150,6 +190,8 @@ class App(tk.Tk):
 
     def _exito(self, chart_out: Path, ms_out: Path, aviso: str = None) -> None:
         self.boton_generar.config(state="normal")
+        # Después de generar, el histórico cambió: mostrar el estado nuevo.
+        self._refrescar_historico()
         texto = (
             f"Se generaron los dos reportes en:\n\n{chart_out.parent}\n\n"
             f"- {chart_out.name}\n- {ms_out.name}"

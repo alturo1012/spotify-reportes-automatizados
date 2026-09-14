@@ -31,6 +31,22 @@ from . import chart_semanal, config, history, load_data, market_share
 TOLERANCIA_SEMANAS = 3
 
 
+def ultima_semana_guardada(anio: int):
+    """Hasta qué semana de `anio` llega el histórico que alimenta las
+    pestañas por país del Market Share (`ms_band_label_weekly`), o "ninguna"
+    si ese año todavía no tiene nada.
+
+    Sirve para que el aviso de "esta fecha ya estaba cargada" pueda decir
+    hasta dónde llegan los reportes, que es justo la duda que aparece cuando
+    uno genera "la semana 34" y en las pestañas ve la 33.
+    """
+    historico = history.cargar_ms_band_label_weekly()
+    if historico.empty:
+        return "ninguna"
+    del_anio = historico.loc[historico["anio"] == anio, "semana"]
+    return int(del_anio.max()) if not del_anio.empty else "ninguna"
+
+
 def revisar_historico(fecha) -> str:
     """Avisa si el histórico parece vacío o incompleto. Devuelve el motivo,
     o None si todo se ve bien.
@@ -104,11 +120,17 @@ def main(argv=None):
 
     ya_cargada = history.semana_ya_cargada(fecha)
     if ya_cargada:
-        print(
-            f"Aviso: la fecha {pd.Timestamp(fecha).date()} ya estaba guardada en el "
-            "histórico -- no se vuelve a agregar (para no duplicar la semana). "
-            "Se regeneran los reportes igual, con el histórico que ya había."
+        aviso_repetida = (
+            f"la fecha {pd.Timestamp(fecha).date()} de este archivo YA estaba en el "
+            "histórico, así que no se agregó otra vez (para no duplicar la semana). "
+            f"Los reportes salieron con el histórico que ya había, hasta la semana "
+            f"{ultima_semana_guardada(pd.Timestamp(fecha).year)}. Si esperabas ver una "
+            "semana nueva, revisa el archivo fuente: lo que manda es la fecha que trae "
+            "adentro (chart_date), no el número de semana que escribiste ni el nombre "
+            "del archivo."
         )
+        avisos.append(aviso_repetida)
+        print(f"Aviso: {aviso_repetida}")
     guardar_en_historico = not ya_cargada
 
     if guardar_en_historico:

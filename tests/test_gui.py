@@ -75,3 +75,31 @@ def test_generar_devuelve_el_aviso_cuando_falla_spotify(tmp_path, monkeypatch):
 
     assert aviso is not None
     assert "Spotify" in aviso
+
+
+# --- estado del histórico en la ventana ---
+
+def test_texto_ultima_semana_dice_cual_fue_la_ultima_cargada(tmp_path):
+    history.seed_historico(*_seed_vacio())
+    fuente = _fuente_minima(tmp_path, chart_date="2026-08-27")
+    gui.generar(str(fuente), "35")
+
+    texto = gui.texto_ultima_semana()
+    assert "Última semana cargada: 1 de 2026" in texto
+    assert "27 ago 2026" in texto   # la fecha de corte, no el número del archivo
+
+
+def test_texto_ultima_semana_avisa_cuando_no_hay_nada_cargado(tmp_path):
+    assert "VACÍO" in gui.texto_ultima_semana()
+
+
+def test_texto_ultima_semana_sigue_la_fecha_del_archivo_no_el_numero(tmp_path):
+    # Si se vuelve a cargar una fecha ya guardada, la última semana NO avanza:
+    # es justo lo que la ventana tiene que dejar ver.
+    history.seed_historico(*_seed_vacio())
+    fuente = _fuente_minima(tmp_path, chart_date="2026-08-27")
+    gui.generar(str(fuente), "35")
+    antes = gui.texto_ultima_semana()
+
+    gui.generar(str(fuente), "36")   # mismo archivo, otro número
+    assert gui.texto_ultima_semana() == antes
