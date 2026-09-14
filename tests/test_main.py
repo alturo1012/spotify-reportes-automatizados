@@ -183,3 +183,32 @@ def test_ultima_semana_guardada_reporta_hasta_donde_llega_el_historico(tmp_path)
 
     main.main(["--fuente", str(_fuente_minima(tmp_path)), "--semana", "25"])
     assert main.ultima_semana_guardada(2026) == 1
+
+
+# --- semana cargada fuera de orden (el hueco del 20-ago-2026) ---
+
+def test_avisa_cuando_la_semana_es_anterior_a_la_ultima_cargada(tmp_path):
+    # Si una semana se salta y se carga después, el número que le toca es el
+    # más alto y queda dibujada al final de la cuadrícula. Hay que decirlo.
+    history.seed_historico(*_seed_vacio())
+    main.main(["--fuente", str(_fuente_minima(tmp_path, chart_date="2026-09-03")),
+               "--semana", "36"])
+
+    aviso = main.revisar_orden(pd.Timestamp("2026-08-20"))
+    assert aviso is not None
+    assert "ANTERIOR" in aviso
+    assert "recargar_semanas" in aviso
+
+
+def test_no_avisa_de_orden_cuando_la_semana_es_la_siguiente(tmp_path):
+    history.seed_historico(*_seed_vacio())
+    main.main(["--fuente", str(_fuente_minima(tmp_path, chart_date="2026-08-20")),
+               "--semana", "34"])
+
+    assert main.revisar_orden(pd.Timestamp("2026-08-27")) is None
+    # y volver a cargar la MISMA fecha tampoco es "fuera de orden"
+    assert main.revisar_orden(pd.Timestamp("2026-08-20")) is None
+
+
+def test_no_avisa_de_orden_con_el_historico_vacio(tmp_path):
+    assert main.revisar_orden(pd.Timestamp("2026-08-20")) is None

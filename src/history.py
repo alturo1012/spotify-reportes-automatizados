@@ -139,6 +139,18 @@ def _conectar() -> sqlite3.Connection:
     return conn
 
 
+# Las cinco tablas de histórico, en el orden en que se siembran. NO incluye
+# los cachés de Spotify, que viven en la misma base pero no son histórico:
+# `vaciar_historico()` borra solo estas.
+TABLAS_HISTORICO = (
+    "chart_band_weekly",
+    "ms_label_weekly",
+    "ms_band_label_weekly",
+    "chart_track_weekly",
+    "bmat_weekly",
+)
+
+
 def seed_historico(
     chart_csv: Path = None,
     ms_csv: Path = None,
@@ -372,6 +384,46 @@ def cargar_ms_band_label_weekly() -> pd.DataFrame:
             "ORDER BY country_code, anio, semana, banda, label_group",
             conn,
         )
+    finally:
+        conn.close()
+
+
+def ultima_fecha_cargada():
+    """La chart_date más reciente que hay en el histórico, o None.
+
+    Se usa para detectar que se está cargando una semana ANTERIOR a la
+    última guardada (ver main.revisar_orden): como el número de semana se
+    asigna por orden de carga y no por fecha, una semana que llega tarde
+    quedaría con el número más alto y se dibujaría al final de la
+    cuadrícula, fuera de lugar.
+    """
+    conn = _conectar()
+    try:
+        fila = conn.execute(
+            "SELECT MAX(chart_date) FROM ms_band_label_weekly"
+        ).fetchone()
+    finally:
+        conn.close()
+    if fila is None or fila[0] is None:
+        return None
+    return pd.Timestamp(fila[0])
+
+
+def vaciar_historico() -> None:
+    """Borra las cinco tablas de histórico, dejando intacto todo lo demás de
+    la base -- en particular los cachés de Spotify (`spotify_isrc_cache` y
+    `spotify_release_date_cache`), que costaron llamadas a la API y no
+    tienen por qué perderse.
+
+    Es el primer paso de `scripts/recargar_semanas.py`: para reconstruir la
+    numeración hay que volver a sembrar y cargar las semanas en orden de
+    fecha, y para eso las tablas tienen que arrancar vacías.
+    """
+    conn = _conectar()
+    try:
+        for tabla in TABLAS_HISTORICO:
+            conn.execute(f"DELETE FROM {tabla}")
+        conn.commit()
     finally:
         conn.close()
 

@@ -47,6 +47,38 @@ def ultima_semana_guardada(anio: int):
     return int(del_anio.max()) if not del_anio.empty else "ninguna"
 
 
+def revisar_orden(fecha) -> str:
+    """Avisa si esta semana es ANTERIOR a la última cargada. Devuelve el
+    motivo, o None si viene en orden.
+
+    Por qué importa: el número de semana se asigna por orden de carga (la
+    última guardada + 1), no por fecha. Si una semana se salta y se carga
+    después, se le asigna el número más alto y termina dibujada al FINAL de
+    la cuadrícula, detrás de semanas posteriores a ella -- y de paso todas
+    las que se cargaron en el medio quedan corridas un número.
+
+    Le pasó al usuario con el 20 de agosto de 2026: esa semana no quedó en
+    la base (la base se volvió a sembrar y se perdió), se siguieron cargando
+    las siguientes, y la cuadrícula quedó 32, 33, 34 (27-ago), 35 (03-sep),
+    sin el 20-ago y con todo corrido. Cargarla en ese momento la habría
+    puesto al final, que es peor. La salida está en
+    `scripts/recargar_semanas.py`.
+    """
+    ultima = history.ultima_fecha_cargada()
+    if ultima is None:
+        return None
+    fecha = pd.Timestamp(fecha)
+    if fecha >= ultima:
+        return None
+    return (
+        f"esta semana ({fecha.date()}) es ANTERIOR a la última que hay en el histórico "
+        f"({ultima.date()}). Se guardó igual, pero con el número más alto, así que en "
+        "las pestañas por país va a aparecer al final, fuera de orden. Para dejar la "
+        "numeración bien, corre `python -m scripts.recargar_semanas` con TODOS los "
+        "archivos fuente posteriores a la siembra: los vuelve a cargar en orden de fecha."
+    )
+
+
 def revisar_historico(fecha) -> str:
     """Avisa si el histórico parece vacío o incompleto. Devuelve el motivo,
     o None si todo se ve bien.
@@ -134,10 +166,11 @@ def main(argv=None):
     guardar_en_historico = not ya_cargada
 
     if guardar_en_historico:
-        aviso_historico = revisar_historico(fecha)
-        if aviso_historico:
-            avisos.append(aviso_historico)
-            print(f"Aviso: {aviso_historico}")
+        for revision in (revisar_historico, revisar_orden):
+            aviso = revision(fecha)
+            if aviso:
+                avisos.append(aviso)
+                print(f"Aviso: {aviso}")
 
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
