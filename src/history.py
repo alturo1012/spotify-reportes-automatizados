@@ -39,7 +39,7 @@ from pathlib import Path
 import sqlite3
 import pandas as pd
 
-from . import config
+from . import config, load_data
 
 DB_PATH = config.ROOT_DIR / "data" / "history" / "universal_data.db"
 
@@ -258,11 +258,17 @@ def append_semana_chart(df_semana: pd.DataFrame) -> None:
     anio = fecha.year
     mes = config.MESES_ES[fecha.month]
 
+    # Una fila por TRACK, no por participación de sello: la fuente parte el
+    # mismo track en varias filas cuando el market share está compartido, y
+    # contarlas todas infla el conteo (ver load_data.tracks_unicos y el
+    # comentario de la revisión del 16/09/2026).
+    df_tracks = load_data.tracks_unicos(df_semana)
+
     conn = _conectar()
     try:
         semana = _proxima_semana(conn, "chart_band_weekly", anio)
         filas = []
-        for country_code, grupo_pais in df_semana.groupby("country_code"):
+        for country_code, grupo_pais in df_tracks.groupby("country_code"):
             universal = grupo_pais[grupo_pais["label_group"] == "Universal"]
             for banda in config.BANDAS_CHART:
                 conteo = int((universal["position"] <= banda).sum())

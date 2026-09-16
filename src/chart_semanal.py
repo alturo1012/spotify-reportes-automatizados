@@ -26,7 +26,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from . import config, history, spotify_release_dates
+from . import config, history, load_data, spotify_release_dates
 
 _RELLENO_ROJO = PatternFill(
     start_color=config.COLOR_SEMAFORO_ROJO, end_color=config.COLOR_SEMAFORO_ROJO, fill_type="solid"
@@ -200,7 +200,22 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     if df_semana.empty:
         return pd.DataFrame(columns=columnas_vacio)
 
-    df = df_semana.copy()
+    # Dos correcciones pedidas en la revisión del 16/09/2026:
+    #
+    # 1. Una fila por TRACK. La fuente parte el track en varias filas cuando
+    #    el market share está compartido, y antes cada parte contaba aparte
+    #    (inflaba "N° Países" y "Suma Posiciones").
+    # 2. SOLO productos Universal. El listado es el "detalle de productos"
+    #    del reporte de Universal: antes traía todos los sellos, así que en
+    #    el TOP 10 de Colombia de la semana 36 se veían 7 tracks cuando los
+    #    de Universal eran 2. Con el filtro, la cantidad de posiciones que
+    #    muestra cada columna coincide con la serie histórica de arriba,
+    #    que es justo lo que el revisor esperaba.
+    df = load_data.tracks_unicos(df_semana)
+    df = df[df["label_group"] == "Universal"]
+    if df.empty:
+        return pd.DataFrame(columns=columnas_vacio)
+    df = df.copy()
     if "region" not in df.columns:
         # Defensivo: "region"/"ISRC" vienen de la fuente BQ real
         # (config.SOURCE_COLUMNS), pero no todo caller de prueba las incluye
@@ -235,10 +250,12 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     listado = listado.sort_values(
         ["paises_presente", "suma_posiciones"], ascending=[False, True]
     ).reset_index(drop=True)
-    # Solo las mejores config.TOP_N_LISTADO_CANCIONES (por defecto 200) --
-    # pedido explícito del usuario, para no listar las 1000+ canciones de
-    # una semana completa.
-    return listado.head(config.TOP_N_LISTADO_CANCIONES).reset_index(drop=True)
+    # Tope opcional (ver config.TOP_N_LISTADO_CANCIONES). Hoy está en None:
+    # el listado trae solo productos Universal y son pocos, así que se
+    # muestran todos para que cuadre con la serie histórica de arriba.
+    if config.TOP_N_LISTADO_CANCIONES:
+        listado = listado.head(config.TOP_N_LISTADO_CANCIONES)
+    return listado.reset_index(drop=True)
 
 
 # Motivo por el que la última corrida no pudo resolver fechas de

@@ -184,14 +184,26 @@ LABEL_GROUPS_MS = [
 # label_group tal cual viene de la fuente BQ trae 9 valores distintos, pero
 # el reporte final agrupa a 7. Som Livre y Altafonte se cuentan como Indies
 # (confirmado con el usuario y con el conteo de valores reales de la fuente).
+# Som Livre y Altafonte van dentro de SONY, no de Indies.
+#
+# Estaban como "Indies" y la revisión del 16/09/2026 pidió validarlo. Se
+# comprobó contra el reporte oficial de la semana 33, Brasil, banda 200
+# (que es donde Som Livre pesa más, un 10,5% de los streams):
+#
+#     sello       oficial   como Indies   como Sony
+#     Sony         0,2755      0,1528       0,2755
+#     Indies       0,2241      0,3468       0,2241
+#
+# Con Som Livre y Altafonte dentro de Sony los dos valores dan EXACTO; como
+# Indies se desvían 12 puntos. Confirmado también en España.
 LABEL_GROUP_ALIASES = {
-    "Som Livre": "Indies",
-    "Altafonte": "Indies",
+    "Som Livre": "Sony",
+    "Altafonte": "Sony",
 }
 
 
 def normalizar_label_group(valor: str) -> str:
-    """Aplica el agrupamiento real usado en los reportes (Som Livre/Altafonte -> Indies).
+    """Aplica el agrupamiento real usado en los reportes (Som Livre/Altafonte -> Sony).
 
     Cualquier otro valor de label_group se devuelve tal cual viene de la fuente.
     """
@@ -290,12 +302,17 @@ MS_ALTO_FILA = 19
 # semáforo.
 COLOR_BORDE_CUADRICULA = "808080"
 
-# Cuántas canciones como máximo se listan en el "listado de canciones" de
-# "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con
-# todas las canciones de una semana (pueden ser 1000+) la hoja queda
-# enorme y poco práctica; el usuario pidió dejar solo las mejores 200 (ya
-# ordenadas por cantidad de países y suma de posiciones).
-TOP_N_LISTADO_CANCIONES = 200
+# Tope de canciones del "listado de canciones" de "Resumen Total" (ver
+# chart_semanal.construir_listado_canciones). None = sin tope, todas.
+#
+# Estuvo en 200 mientras el listado traía TODOS los sellos: una semana
+# completa son 1000+ canciones y la hoja quedaba impracticable. Desde la
+# revisión del 16/09/2026 el listado trae solo productos Universal -- unos
+# 226 por semana --, así que el tope dejó de proteger de nada y pasó a
+# esconder productos: con 200 el TOP 200 de Colombia mostraba 45 tracks
+# cuando la serie histórica decía 46. Sin tope, el detalle cuadra con la
+# serie, que es la comprobación que hizo el revisor.
+TOP_N_LISTADO_CANCIONES = None
 
 # ---------------------------------------------------------------------------
 # Reporte BMAT (Promúsica Colombia)

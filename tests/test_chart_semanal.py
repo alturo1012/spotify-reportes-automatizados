@@ -657,3 +657,83 @@ def test_resumen_total_y_detalle_tracks_salen_en_cuadricula(tmp_path):
     for fila in (2, 3):
         for col in (1, 2):
             assert _tiene_todos_los_bordes(det.cell(row=fila, column=col)), (fila, col)
+
+
+# --- detalle de productos: solo Universal, una línea por track (16/09/2026) ---
+
+def _semana_con_varios_sellos(chart_date="2026-09-10"):
+    """CO: 2 tracks Universal en el TOP 10 y 3 de otros sellos."""
+    filas = []
+    for pos, sello, nombre in [
+        (1, "Sony", "Ajena A"), (2, "Universal", "Uni A"), (3, "Warner", "Ajena B"),
+        (4, "Universal", "Uni B"), (5, "Indies", "Ajena C"),
+    ]:
+        filas.append({
+            "country_code": "CO", "chart_date": pd.Timestamp(chart_date), "position": pos,
+            "artist": "Artista", "song_name": nombre, "stream_count": 1_000_000,
+            "label_group": sello, "label_name": sello, "region": "Latin", "ISRC": f"I{pos}",
+        })
+    return pd.DataFrame(filas)
+
+
+def test_el_listado_solo_trae_productos_universal(tmp_path):
+    # Comentario del revisor: "únicamente deben incluirse los productos que
+    # estén marcados como Universal". En el TOP 10 de CO hay 5 tracks pero
+    # solo 2 son de Universal.
+    listado = chart_semanal.construir_listado_canciones(_semana_con_varios_sellos())
+
+    assert len(listado) == 2
+    assert sorted(listado["cancion"]) == ["Uni A / Artista", "Uni B / Artista"]
+
+
+def test_el_listado_cuenta_una_sola_vez_el_track_partido_entre_sellos(tmp_path):
+    # El track llega en dos filas (market share compartido): una sola línea,
+    # y "Suma Posiciones" no se duplica.
+    filas = []
+    for streams in (300_000.0, 700_000.0):
+        filas.append({
+            "country_code": "CO", "chart_date": pd.Timestamp("2026-09-10"), "position": 7,
+            "artist": "Artista", "song_name": "Partida", "stream_count": streams,
+            "label_group": "Universal", "label_name": "UMG", "region": "Latin", "ISRC": "I7",
+        })
+    listado = chart_semanal.construir_listado_canciones(pd.DataFrame(filas))
+
+    assert len(listado) == 1
+    assert listado["paises_presente"].iloc[0] == 1
+    assert listado["suma_posiciones"].iloc[0] == 7      # no 14
+    assert listado["CO_top10"].iloc[0] == 7
+
+
+def test_el_listado_deja_fuera_el_track_empatado_entre_dos_sellos(tmp_path):
+    filas = []
+    for sello in ("Universal", "Sony"):
+        filas.append({
+            "country_code": "CO", "chart_date": pd.Timestamp("2026-09-10"), "position": 8,
+            "artist": "Artista", "song_name": "Empatada", "stream_count": 500_000.0,
+            "label_group": sello, "label_name": sello, "region": "Latin", "ISRC": "I8",
+        })
+    listado = chart_semanal.construir_listado_canciones(pd.DataFrame(filas))
+    assert listado.empty
+
+
+def test_el_detalle_cuadra_con_la_serie_historica(tmp_path):
+    # Es la comprobación que hizo el revisor: cuántos tracks muestra el
+    # detalle en cada banda tiene que ser el número de la serie de arriba.
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = _semana_con_varios_sellos()
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    ws = openpyxl.load_workbook(salida)[config.CHART_SHEET_RESUMEN]
+    serie_top10 = ws.cell(row=7, column=5).value          # CO, banda 10
+    fila_tit = next(r for r in range(1, ws.max_row + 1)
+                    if str(ws.cell(row=r, column=1).value or "").startswith("Week Ending"))
+    en_detalle = sum(1 for r in range(fila_tit + 3, ws.max_row + 1)
+                     if isinstance(ws.cell(row=r, column=5).value, int))
+    assert serie_top10 == 2
+    assert en_detalle == serie_top10

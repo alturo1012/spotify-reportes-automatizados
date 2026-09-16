@@ -234,3 +234,32 @@ def test_semana_ya_cargada_mira_tambien_el_historico_por_banda(tmp_path):
 
     assert history.semana_ya_cargada("2026-08-13") is True   # solo está en ms_band_label_weekly
     assert history.semana_ya_cargada("2026-08-20") is False
+
+
+def test_append_semana_chart_cuenta_tracks_no_filas(tmp_path):
+    # Revisión del 16/09/2026: un track con market share compartido llega en
+    # varias filas y antes contaba una vez por fila.
+    filas = []
+    for streams in (62660.8, 328969.2):      # CO pos 100 "+57", caso real
+        filas.append({
+            "country_code": "CO", "chart_date": pd.Timestamp("2026-09-10"), "position": 100,
+            "artist": "KAROL G", "song_name": "+57", "stream_count": streams,
+            "label_group": "Universal", "label_name": "UMG",
+        })
+    history.append_semana_chart(pd.DataFrame(filas))
+
+    df = history.cargar_chart_band_weekly()
+    conteo = df[(df.country_code == "CO") & (df.banda == 100)].conteo_universal.iloc[0]
+    assert conteo == 1        # antes daba 2
+
+
+def test_append_semana_chart_no_cuenta_el_track_empatado(tmp_path):
+    filas = [{
+        "country_code": "CO", "chart_date": pd.Timestamp("2026-09-10"), "position": 50,
+        "artist": "A", "song_name": "Empatada", "stream_count": 1000.0,
+        "label_group": sello, "label_name": sello,
+    } for sello in ("Universal", "Sony")]
+    history.append_semana_chart(pd.DataFrame(filas))
+
+    df = history.cargar_chart_band_weekly()
+    assert df[(df.country_code == "CO") & (df.banda == 50)].conteo_universal.iloc[0] == 0
