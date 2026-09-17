@@ -60,13 +60,14 @@ def test_las_hojas_conocidas_estan_configuradas():
 
 # --- tracks compartidos entre sellos (revisión del 16/09/2026) ---
 
-def _fila(pos, sello, streams, nombre="Cancion", isrc="ISRC1", pais="Colombia"):
+def _fila(pos, sello, streams, nombre="Cancion", isrc="ISRC1", pais="Colombia",
+          copyright="x"):
     return {
         "country": pais, "country_alt": pais, "chart_date": "2026-09-10",
         "is_latest_date": True, "artist": "Artista", "song_name": nombre,
         "position": pos, "stream_count": streams, "ISRC": isrc,
         "label_group": sello, "repertoire": "Local", "repertoire_group": "Local",
-        "album_copyright": "x", "label_name": "x", "content_provider_name": "x",
+        "album_copyright": copyright, "label_name": "x", "content_provider_name": "x",
         "major_label": sello, "artist_country": pais, "region": "LATAM",
         "main_language": "es",
     }
@@ -91,11 +92,15 @@ def test_tracks_unicos_suma_los_streams_del_track_partido(tmp_path):
     assert u["label_group"].iloc[0] == "Universal"
 
 
-def test_tracks_unicos_asigna_el_track_al_sello_con_mas_participacion(tmp_path):
-    # Caso real: PT pos 182 "Maria Joana", Universal 33% + Warner 67%.
+def test_tracks_unicos_asigna_el_track_a_su_dueno_aunque_no_tenga_la_mayoria(tmp_path):
+    # La regla que confirmaron Tatiana y Alejandro: manda la PROPIEDAD del
+    # producto, no la participación. Caso real: PT pos 182 "Maria Joana" --
+    # acá invertido a propósito, con Universal en mayoría (67%) y el
+    # copyright de Warner: el track es de Warner igual.
     df = _fuente_filas(tmp_path, [
-        _fila(182, "Universal", 22146.33),
-        _fila(182, "Warner", 44292.67),
+        _fila(182, "Universal", 44292.67, copyright="Universal Music"),
+        _fila(182, "Warner", 22146.33,
+              copyright="© 2023 Warner Music Portugal, Lda, ℗ 2023 Warner Music Portugal, Lda"),
     ])
     u = load_data.tracks_unicos(df)
 
@@ -104,18 +109,33 @@ def test_tracks_unicos_asigna_el_track_al_sello_con_mas_participacion(tmp_path):
     assert u["stream_count"].iloc[0] == pytest.approx(66439.0)
 
 
-def test_tracks_unicos_en_empate_exacto_el_track_no_es_de_nadie(tmp_path):
-    # Caso real: PT pos 84 "Faz Bem", Sony 50% + Universal 50%. Criterio
-    # confirmado con el usuario: en empate el track NO le cuenta a Universal.
+def test_tracks_unicos_resuelve_el_empate_por_el_copyright(tmp_path):
+    # Caso real: PT pos 84 "Faz Bem", Sony 50% + Universal 50%. La
+    # participación no decide; el copyright dice que el producto es de
+    # Universal, así que el track se le cuenta a Universal.
     df = _fuente_filas(tmp_path, [
-        _fila(84, "Sony", 48361.5),
-        _fila(84, "Universal", 48361.5),
+        _fila(84, "Sony", 48361.5, copyright="Sony Music"),
+        _fila(84, "Universal", 48361.5,
+              copyright="© 2024 Universal Music Portugal, S.A., ℗ 2024 Universal Music Portugal, S.A."),
     ])
     u = load_data.tracks_unicos(df)
 
     assert len(u) == 1
-    assert u["label_group"].iloc[0] is None
+    assert u["label_group"].iloc[0] == "Universal"
     assert u["stream_count"].iloc[0] == pytest.approx(96723.0)
+
+
+def test_tracks_unicos_sin_copyright_util_no_se_lo_asigna_a_nadie(tmp_path):
+    # Si ninguna de las dos filas trae un aviso de copyright de verdad, no
+    # hay forma de saber de quién es el producto: mejor no contarlo que
+    # contárselo a quien no es.
+    df = _fuente_filas(tmp_path, [
+        _fila(91, "Universal", 100.0, copyright="UMLA"),
+        _fila(91, "Indies", 100.0, copyright="Indies"),
+    ])
+    u = load_data.tracks_unicos(df)
+
+    assert u["label_group"].iloc[0] is None
 
 
 def test_tracks_unicos_no_toca_los_tracks_normales(tmp_path):

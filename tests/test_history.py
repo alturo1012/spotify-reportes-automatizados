@@ -253,7 +253,9 @@ def test_append_semana_chart_cuenta_tracks_no_filas(tmp_path):
     assert conteo == 1        # antes daba 2
 
 
-def test_append_semana_chart_no_cuenta_el_track_empatado(tmp_path):
+def test_append_semana_chart_no_cuenta_el_track_sin_dueno_identificable(tmp_path):
+    # Sin un copyright que diga de quién es el producto, el track no le
+    # suma a ningún sello (ver load_data.dueno_del_track).
     filas = [{
         "country_code": "CO", "chart_date": pd.Timestamp("2026-09-10"), "position": 50,
         "artist": "A", "song_name": "Empatada", "stream_count": 1000.0,

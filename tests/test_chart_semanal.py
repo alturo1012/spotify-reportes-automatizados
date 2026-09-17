@@ -704,7 +704,9 @@ def test_el_listado_cuenta_una_sola_vez_el_track_partido_entre_sellos(tmp_path):
     assert listado["CO_top10"].iloc[0] == 7
 
 
-def test_el_listado_deja_fuera_el_track_empatado_entre_dos_sellos(tmp_path):
+def test_el_listado_deja_fuera_el_track_del_que_no_se_sabe_el_dueno(tmp_path):
+    # Sin un copyright que diga de quién es el producto, el track no le
+    # suma a ningún sello (ver load_data.dueno_del_track).
     filas = []
     for sello in ("Universal", "Sony"):
         filas.append({

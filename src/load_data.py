@@ -1,10 +1,74 @@
 """Carga y limpieza de la fuente de datos BQ (export de BigQuery a Excel)."""
+import re
 from pathlib import Path
 import pandas as pd
  
 from . import config
  
  
+# Marcas de un aviso de copyright de verdad: el símbolo © o ℗ (o sus
+# versiones en texto) o un año. Sirven para distinguirlo de una etiqueta
+# genérica de sello -- ver dueno_del_track.
+_MARCAS_COPYRIGHT = re.compile(r"©|℗|\(C\)|\(P\)|\b(?:19|20)\d{2}\b", re.IGNORECASE)
+
+
+def dueno_del_track(filas: pd.DataFrame):
+    """El sello DUEÑO de un track, entre las filas (una por participación)
+    con que la fuente lo describe. None si no se puede determinar.
+
+    LA REGLA, Y DE DÓNDE SALE
+    -------------------------
+    Tatiana y Alejandro la definieron así: "el track se contabiliza para la
+    disquera propietaria del producto" -- no para la de mayor participación.
+    En un 50/50 la participación no dice nada, pero el dueño sí está en la
+    fuente: cuando un track viene compartido, UNA de las filas trae el aviso
+    de copyright REAL y la otra una etiqueta genérica del sello. Ejemplos
+    reales de Portugal, semana 33:
+
+        Faz Bem     [Sony]      "Sony Music"                 <- genérica
+                    [Universal] "© 2024 Universal Music Portugal, S.A. ..."  <- dueño
+        PENSAR EM TI[Universal] "UMLA"                       <- genérica
+                    [Virgin]    "© 2026 Mário Cotrim, distributed by ... Virgin Music Portugal"
+        DÁKITI      [Universal] "Universal Music"            <- genérica
+                    [Orchard]   "(C) 2020 Rimas Entertainment LLC ..."
+
+    Así que el dueño es el sello de la fila cuyo `album_copyright` es un
+    aviso de verdad. Verificado contra los 5 casos que ellos mismos
+    clasificaron a mano: coincide en los 5, y deja el conteo del Chart de la
+    semana 33 idéntico al informe oficial (0 diferencias en 85 valores).
+
+    Si ninguna fila trae aviso real, o si hay empate entre varias, se
+    devuelve None y el track no le suma a ningún sello -- mejor no contarlo
+    que contárselo a quien no es.
+    """
+    sellos_presentes = set(filas["label_group"].dropna())
+    if len(sellos_presentes) == 1:
+        # Un solo sello en todas las filas (el track viene partido, pero
+        # dentro de la misma disquera): no hay nada que decidir.
+        return sellos_presentes.pop()
+    if not sellos_presentes:
+        return None
+
+    if "album_copyright" not in filas.columns:
+        return None
+
+    reales = [
+        (sello, texto)
+        for sello, texto in zip(filas["label_group"], filas["album_copyright"])
+        if isinstance(texto, str) and _MARCAS_COPYRIGHT.search(texto)
+    ]
+    if not reales:
+        return None
+    if len({sello for sello, _ in reales}) == 1:
+        return reales[0][0]
+    # Varios sellos con aviso real: gana el más específico (el más largo), y
+    # si empatan en largo no se decide.
+    reales.sort(key=lambda par: len(par[1]), reverse=True)
+    if len(reales[0][1]) == len(reales[1][1]):
+        return None
+    return reales[0][0]
+
+
 def tracks_unicos(df: pd.DataFrame) -> pd.DataFrame:
     """Una fila por TRACK, a partir de la fuente que trae una fila por
     (track, participación de sello).
@@ -28,26 +92,23 @@ def tracks_unicos(df: pd.DataFrame) -> pd.DataFrame:
     - Los streams SE SUMAN: el total del track es la suma de sus partes.
       (Para el Market Share NO se usa esta función: ahí cada sello se queda
       con su parte, que es justamente lo que la revisión pide.)
-    - El track se le asigna al sello con participación ESTRICTAMENTE mayor.
-      En empate exacto (50/50, que es el caso más común) no se le asigna a
-      ninguno: `label_group` queda en None y el track no le suma a nadie.
-      Criterio confirmado con el usuario el 16/09/2026.
+    - El track se le asigna al SELLO DUEÑO DEL PRODUCTO, no al de mayor
+      participación -- ver `dueno_del_track`. Es la regla que confirmaron
+      Tatiana y Alejandro: "el track se contabiliza para la disquera
+      propietaria del producto; los streams sí se reparten".
 
     Devuelve las mismas columnas de entrada; `stream_count` sumado y
-    `label_group` reemplazado por el sello dueño (o None).
+    `label_group` reemplazado por el sello dueño (o None si no se puede
+    determinar).
     """
     if df.empty:
         return df.copy()
 
     claves = ["country_code", "position"]
-    streams_por_sello = df.groupby(claves + ["label_group"])["stream_count"].sum()
 
     duenos = {}
-    for clave, serie in streams_por_sello.groupby(level=claves):
-        por_sello = serie.droplevel(claves)
-        mayor = por_sello.max()
-        # Estrictamente mayor: si dos sellos empatan en el máximo, nadie.
-        duenos[clave] = None if (por_sello == mayor).sum() > 1 else por_sello.idxmax()
+    for clave, grupo in df.groupby(claves):
+        duenos[clave] = dueno_del_track(grupo)
 
     totales = df.groupby(claves)["stream_count"].sum()
 
@@ -125,4 +186,4 @@ def load_source(path: Path, sheet_name: str = None) -> pd.DataFrame:
  
 def filtrar_ultima_fecha(df: pd.DataFrame) -> pd.DataFrame:
     """Devuelve solo las filas marcadas como is_latest_date (semana vigente)."""
-    return df[df["is_latest_date"] == True].copy()  # noqa: E712z
+    return df[df["is_latest_date"] == True].copy()  # noqa: E712
