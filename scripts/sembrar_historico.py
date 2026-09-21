@@ -7,7 +7,7 @@ Siembra las cuatro tablas de histórico:
   - chart_band_weekly    (Chart Semanal, 2019 -> 2026 semana 33)
   - ms_label_weekly      (streams por sello, 2025 -> 2026 semana 24)
   - ms_band_label_weekly (% por banda/sello de cada país, 2021 -> 2026 sem 33)
-  - bmat_weekly          (reporte BMAT Promúsica Colombia, 2020 -> 2026 sem 23)
+  - bmat_weekly          (reportes BMAT, 11 mercados, 2020 -> 2026 sem 35)
 
 Es seguro correrlo más de una vez: `seed_historico()` usa INSERT OR IGNORE y
 no duplica lo que ya estaba cargado. OJO: por lo mismo, si un CSV de siembra

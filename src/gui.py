@@ -25,7 +25,7 @@ if sys.stderr is None:
 
 import pandas as pd
 
-from . import chart_semanal, config, history
+from . import bmat_calculo, bmat_proceso, chart_semanal, config, history
 from . import main as main_module
 
 
@@ -75,11 +75,112 @@ def generar(fuente_path: str, semana: str):
     return chart_out, ms_out, "\n\n".join(avisos) if avisos else None
 
 
+def texto_ultima_semana_bmat() -> str:
+    """Igual que texto_ultima_semana, para BMAT (su histórico es aparte)."""
+    ultima = bmat_calculo.ultima_semana()
+    if ultima is None:
+        return "BMAT: todavía no hay semanas calculadas (se siembra hasta la 35 de 2026 al generar)."
+    return f"BMAT - última semana cargada: {ultima[1]} de {ultima[0]}"
+
+
+def generar_bmat(carpeta: str, revision: str = None):
+    """Corre el proceso BMAT completo (ver bmat_proceso.generar_semana) y
+    devuelve (resultado, texto para mostrar). Sin tkinter, para probarlo."""
+    r = bmat_proceso.generar_semana(carpeta, revision=revision or None)
+    return r, bmat_proceso.resumen(r)
+
+
+class VentanaBMAT(tk.Toplevel):
+    """Ventana de los reportes BMAT: carpeta con los WK de la semana y, si
+    ya se revisó, la lista de tracks nuevos corregida."""
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Reportes BMAT")
+        self.geometry("620x330")
+        self.resizable(False, False)
+        self.carpeta_var = tk.StringVar()
+        self.revision_var = tk.StringVar()
+        self._cola: "queue.Queue" = queue.Queue()
+
+        self.estado_hist = tk.StringVar(value=texto_ultima_semana_bmat())
+        tk.Label(self, textvariable=self.estado_hist, fg="#1D7A3E", font=("Segoe UI", 9, "bold")).pack(
+            anchor="w", padx=14, pady=(14, 0))
+
+        tk.Label(self, text="1. Carpeta con el archivo WK de BMAT de la semana (ej. WK36-CO.xlsx):").pack(
+            anchor="w", padx=14, pady=(14, 4))
+        f1 = tk.Frame(self)
+        f1.pack(fill="x", padx=14)
+        tk.Entry(f1, textvariable=self.carpeta_var, width=56).pack(side="left")
+        tk.Button(f1, text="Elegir carpeta...", command=self._elegir_carpeta).pack(side="left", padx=6)
+
+        tk.Label(self, text="2. (Opcional) Lista \"Revisar clasificacion BMAT\" ya corregida:").pack(
+            anchor="w", padx=14, pady=(14, 4))
+        f2 = tk.Frame(self)
+        f2.pack(fill="x", padx=14)
+        tk.Entry(f2, textvariable=self.revision_var, width=56).pack(side="left")
+        tk.Button(f2, text="Elegir archivo...", command=self._elegir_revision).pack(side="left", padx=6)
+
+        self.boton = tk.Button(self, text="3. Generar reportes BMAT", command=self._generar,
+                               bg="#002060", fg="white", font=("Segoe UI", 11, "bold"))
+        self.boton.pack(pady=20)
+        self.estado = tk.StringVar()
+        tk.Label(self, textvariable=self.estado, fg="#555", wraplength=560, justify="left").pack(padx=14)
+
+    def _elegir_carpeta(self):
+        ruta = filedialog.askdirectory(title="Carpeta con los WK de BMAT", parent=self)
+        if ruta:
+            self.carpeta_var.set(ruta)
+
+    def _elegir_revision(self):
+        ruta = filedialog.askopenfilename(title="Lista para revisar corregida", parent=self,
+                                          filetypes=[("Excel", "*.xlsx"), ("Todos los archivos", "*.*")])
+        if ruta:
+            self.revision_var.set(ruta)
+
+    def _generar(self):
+        carpeta = self.carpeta_var.get().strip()
+        if not carpeta:
+            messagebox.showerror("Falta la carpeta", "Elige la carpeta con el archivo WK de BMAT (ej. WK36-CO.xlsx).", parent=self)
+            return
+        self.boton.config(state="disabled")
+        self.estado.set("Generando, un momento...")
+        threading.Thread(target=self._en_hilo, args=(carpeta, self.revision_var.get().strip()),
+                         daemon=True).start()
+        self.after(200, self._revisar)
+
+    def _en_hilo(self, carpeta, revision):
+        try:
+            self._cola.put(("exito", generar_bmat(carpeta, revision)))
+        except (SystemExit, Exception) as e:  # noqa: BLE001 -- se muestra tal cual
+            self._cola.put(("error", str(e)))
+
+    def _revisar(self):
+        try:
+            tipo, dato = self._cola.get_nowait()
+        except queue.Empty:
+            self.after(200, self._revisar)
+            return
+        self.boton.config(state="normal")
+        self.estado_hist.set(texto_ultima_semana_bmat())
+        if tipo == "error":
+            self.estado.set("Ocurrió un error, revisa el mensaje.")
+            messagebox.showerror("Error en BMAT", dato, parent=self)
+            return
+        resultado, texto = dato
+        self.revision_var.set("")
+        self.estado.set(f"Listo. Archivos en: {resultado.carpeta_salida}")
+        if resultado.avisos:
+            messagebox.showwarning("Reportes BMAT generados (con avisos)", texto, parent=self)
+        else:
+            messagebox.showinfo("Reportes BMAT generados", texto, parent=self)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Reportes Spotify Latam")
-        self.geometry("560x280")
+        self.geometry("560x310")
         self.resizable(False, False)
 
         self.fuente_var = tk.StringVar()
@@ -127,6 +228,10 @@ class App(tk.Tk):
         tk.Label(self, textvariable=self.estado_var, fg="#555", wraplength=520, justify="left").pack(
             padx=14
         )
+
+        # BMAT es otro proceso (otra fuente, otros reportes): su propia ventana.
+        tk.Button(self, text="Reportes BMAT...", command=lambda: VentanaBMAT(self)).place(
+            relx=1.0, rely=1.0, x=-12, y=-10, anchor="se")
 
     def _refrescar_historico(self) -> None:
         texto = texto_ultima_semana()
@@ -218,4 +323,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

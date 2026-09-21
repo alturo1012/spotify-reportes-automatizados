@@ -315,30 +315,129 @@ COLOR_BORDE_CUADRICULA = "808080"
 TOP_N_LISTADO_CANCIONES = None
 
 # ---------------------------------------------------------------------------
-# Reporte BMAT (Promúsica Colombia)
+# Reportes BMAT (Colombia, Perú, Ecuador y Centroamérica)
 #
-# Es un reporte aparte de los de Spotify, con su propio universo de datos:
-# BMAT/Promúsica consolida varias plataformas (ver BMAT_FUENTE), no solo
-# Spotify, y usa sus propias bandas y su propia lista de sellos -- 8 en vez
-# de 7 (aparece "ADA Music") y con otra grafía ("Ingrooves" en vez de
-# "INgrooves", "Independientes" en vez de "Indies"). Por eso NO reutiliza
-# LABEL_GROUPS_MS ni BANDAS_MARKET_SHARE: son universos distintos que
-# coinciden en parte, y unificarlos escondería esa diferencia.
+# Son reportes aparte de los de Spotify, con su propio universo de datos:
+# BMAT consolida varias plataformas (ver BMAT_FUENTE), no solo Spotify, y usa
+# sus propias bandas y su propia lista de sellos -- 8 en vez de 7 (aparece
+# "ADA Music") y con otra grafía ("Ingrooves" en vez de "INgrooves",
+# "Independientes" en vez de "Indies"). Por eso NO reutiliza LABEL_GROUPS_MS
+# ni BANDAS_MARKET_SHARE: son universos distintos que coinciden en parte, y
+# unificarlos escondería esa diferencia.
 #
-# Todo verificado contra "MS BMAT COL a Sem 23 de 2026.xlsx".
+# Todo verificado contra los archivos reales de la semana 35 de 2026: las
+# fuentes "WK35-XX.xlsx", los intermedios "Top N BMAT XX a sem 35" y los
+# reportes "MS BMAT XX a Sem 35" (ver claude/bmat_analisis_semana35.md).
 # ---------------------------------------------------------------------------
-BMAT_PAIS = "CO"
 BMAT_BANDAS = [10, 50, 100, 200, 1000, 3000, 5000, 10000]
 BMAT_LABELS = [
     "Universal", "Ingrooves", "Virgin", "Sony",
     "The Orchard", "Warner", "ADA Music", "Independientes",
 ]
-BMAT_SHEET_RESUMEN = "Resumen Promusica Colombia"
-BMAT_SHEET_MARKET_SHARE = "Market Share Promusica Colombia"
-BMAT_TITULO_RESUMEN = "TOP 1.000 \nPROMUSICA COLOMBIA"
-BMAT_TITULO_MARKET_SHARE = "TOP 5.000 PROMUSICA\n COLOMBIA"
+
+# Cada mercado = un archivo fuente "WK<semana>-<código>.xlsx". `top` es el
+# tamaño de la fuente (y la banda más grande que se reporta); `sigla` es la
+# del nombre de los archivos y de las hojas (Panamá viene como "PA" en la
+# fuente pero los reportes siempre la llamaron "PN").
+BMAT_MERCADOS = {
+    "CO": {"nombre": "Colombia", "sigla": "COL", "top": 10000},
+    "PE": {"nombre": "Perú", "sigla": "PE", "top": 10000},
+    "EC": {"nombre": "Ecuador", "sigla": "EC", "top": 5000},
+    "CAM": {"nombre": "Centroamérica", "sigla": "CAM", "top": 3000},
+    "CR": {"nombre": "Costa Rica", "sigla": "CR", "top": 3000},
+    "GT": {"nombre": "Guatemala", "sigla": "GT", "top": 3000},
+    "PA": {"nombre": "Panamá", "sigla": "PN", "top": 3000},
+    "SV": {"nombre": "El Salvador", "sigla": "SV", "top": 3000},
+    "NI": {"nombre": "Nicaragua", "sigla": "NI", "top": 3000},
+    "HN": {"nombre": "Honduras", "sigla": "HN", "top": 3000},
+    "DO": {"nombre": "Rep. Dominicana", "sigla": "DO", "top": 3000},
+}
+
+# Los cuatro reportes finales. Dos "familias" de formato, copiadas de los
+# archivos reales:
+#   A (COL, PE, EC): hoja de % "Market Share ..." + hoja de detalle
+#     (tracks, streams y %) con el año en la fila 1 y la semana en la 2.
+#   B (CAM): por cada uno de los 8 mercados, una hoja "MS XX" (%) y una hoja
+#     "XX" (detalle), con el año en la fila 2/3 y un título por país.
+# `hojas` = {mercado: (hoja de %, hoja de detalle)}.
+BMAT_REPORTES = {
+    "COL": {
+        "familia": "A", "archivo": "MS BMAT COL",
+        "hojas": {"CO": ("Market Share Promusica Colombia", "Resumen Promusica Colombia")},
+        "titulo": "PROMUSICA COLOMBIA",
+    },
+    "PE": {
+        "familia": "A", "archivo": "MS BMAT Peru",
+        "hojas": {"PE": ("Market Share BMAT Peru", "Detalle BMAT Peru")},
+        "titulo": "BMAT PERÚ",
+    },
+    "EC": {
+        "familia": "A", "archivo": "MS BMAT Ecuador",
+        "hojas": {"EC": ("Market Share BMAT Ecuador", "Detalle BMAT Ecuador")},
+        "titulo": "BMAT ECUADOR",
+    },
+    "CAM": {
+        "familia": "B", "archivo": "MS BMAT CAM",
+        "hojas": {m: ("MS " + BMAT_MERCADOS[m]["sigla"], BMAT_MERCADOS[m]["sigla"])
+                  for m in ["CAM", "CR", "GT", "PA", "SV", "NI", "HN", "DO"]},
+        "titulo": "APDIF",
+    },
+}
+
+# Qué se genera de verdad cada semana. Por ahora SOLO Colombia: el reporte
+# "MS BMAT COL" y su intermedio "Top 10000 BMAT COL" con estas cuatro hojas
+# (en este orden). Los otros reportes (PE, EC, CAM) y las hojas "TOP 50 -
+# Posiciones UMG" y "Archivo Base" siguen programados y probados: para
+# activarlos basta con agregarlos a estas listas.
+BMAT_REPORTES_ACTIVOS = ["COL"]
+BMAT_HOJAS_INTERMEDIO = ["Streams Catalogo", "Resumen", "TOP 200 Nuevos", "Tracks Independientes"]
+BMAT_HOJAS_INTERMEDIO_DISPONIBLES = BMAT_HOJAS_INTERMEDIO + ["TOP 50 - Posiciones UMG", "Archivo Base"]
+
+
+def bmat_mercados_activos() -> list:
+    """Los mercados de los reportes activos, en el orden de BMAT_MERCADOS."""
+    activos = {m for r in BMAT_REPORTES_ACTIVOS for m in BMAT_REPORTES[r]["hojas"]}
+    return [m for m in BMAT_MERCADOS if m in activos]
+
+
+# "Disqueras" es la clasificación de cada track (la columna que se agregaba a
+# mano en "Archivo Base"): el nombre de una major o, si es independiente, el
+# de su distribuidora. Estos son los nombres de major tal como se escriben
+# en esa columna, y a qué sello del reporte van. Se comparan sin distinguir
+# mayúsculas ("INgrooves" e "Ingrooves" aparecen los dos en los archivos, y
+# las fórmulas GETPIVOTDATA de Excel tampoco distinguen). Cualquier otro
+# valor -> "Independientes".
+BMAT_DISQUERAS_MAJOR = {
+    "Universal Music Group": "Universal",
+    "INgrooves": "Ingrooves",
+    "Virgin": "Virgin",
+    "Sony Music Entertainment": "Sony",
+    "The Orchard": "The Orchard",
+    "Warner Music Group": "Warner",
+    "ADA Music": "ADA Music",
+}
+
+# Columnas de la fuente WK que usa el cálculo.
+BMAT_COL_POSICION = "Posición"
+BMAT_COL_STREAMS = "Streams con video"
+BMAT_COL_ISRCS = "ISRCs"
+BMAT_COL_DISTRIBUIDORA = "Distribuidora original"
+BMAT_COL_DISQUERA = "Disquera original"
+BMAT_COL_MOVIMIENTO = "comparison_last_week"
+BMAT_COL_LANZAMIENTO = "Fecha de lanzamiento"
+
+# "Streams Catalogo" del intermedio: catálogo = lanzado hasta esta fecha
+# (inclusive), front line = después. Es la fecha que trae la plantilla.
+BMAT_CORTE_CATALOGO = "2023-12-31"
+
+# Tracks con titularidad compartida entre dos sellos (ej. "Dakiti": 50%
+# The Orchard / 50% Universal). Sus streams se reparten entre los dos según
+# el %; el conteo de tracks no cambia. Es la lista que traía la hoja
+# "Resumen" de los intermedios, en un Excel que se puede editar.
+BMAT_TITULARIDAD_XLSX = ROOT_DIR / "data" / "bmat_titularidad_compartida.xlsx"
+
 BMAT_FUENTE = "FUENTE ( Napster, GooglePlay, Spotify, Deezer)"
-# Azul marino de los encabezados de ese archivo (distinto del de los
+# Azul marino de los encabezados de esos archivos (distinto del de los
 # reportes de Spotify, que usan 1F3864).
 COLOR_BANNER_BMAT = "002060"
 

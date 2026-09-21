@@ -12,14 +12,16 @@ sembrar la base y se perdió, o porque simplemente se cargó fuera de orden --
 todas las siguientes quedan corridas un número, y la que falta, si se carga
 después, aparece al final de la cuadrícula en vez de en su lugar.
 
-Este script arregla eso de la única forma que no deja dudas: vacía las cinco
-tablas de histórico, vuelve a sembrar el histórico oficial y carga los
+Este script arregla eso de la única forma que no deja dudas: vacía las cuatro
+tablas de histórico de Spotify, vuelve a sembrar el histórico oficial y carga los
 archivos que le pases ordenados por su chart_date.
 
 QUÉ NO TOCA
 -----------
 - Los cachés de Spotify (las fechas de lanzamiento ya resueltas) se quedan
   donde están: no hay que volver a pedirlas a la API.
+- El histórico BMAT y su clasificación de tracks: son otro reporte, con su
+  propia numeración de semanas.
 - Los archivos fuente: solo se leen.
 - Los reportes ya generados en data/output/: no se borran ni se regeneran.
   Después de correr esto, vuelve a generar el reporte de la última semana.

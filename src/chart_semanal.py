@@ -72,6 +72,47 @@ _FILA_HEADER_PAIS = 5
 _FILA_HEADER_BANDA = 6
 _FILA_PRIMER_DATO = 7
 
+# Columnas del listado de canciones, igual que el informe oficial: el TÍTULO
+# en la columna B, la fecha de lanzamiento en C y la región en D (la A queda
+# vacía). Antes el título iba en A; se movió a pedido de la revisión del
+# 21/09/2026 ("el título dejarlo en la columna B").
+_COL_LISTADO_TITULO = 2
+_COL_LISTADO_FECHA = 3
+_COL_LISTADO_REGION = 4
+
+# Anchos de las cuatro columnas fijas, copiados del informe oficial
+# (Reporte_Chart_Top Semanal ... Sem 24 de 2026.xlsm): A angosta para el
+# año, B ancha para los títulos (y el mes de la serie), C para la semana o
+# la fecha de lanzamiento, D para la región del listado.
+_ANCHOS_COLUMNAS_FIJAS = {_COL_ANIO: 4.9, _COL_MES: 29.6, _COL_SEMANA: 10.6, _COL_SEPARADOR_INICIAL: 7.4}
+
+# Tipografía del informe oficial: Calibri 11 en todo (el año, Calibri 10).
+# Se fija explícita en cada celda: si se deja sin nombre, Excel usa la
+# fuente por defecto de quien abre el archivo (Aptos en los Office nuevos),
+# y el reporte se ve distinto al oficial.
+FUENTE = "Calibri"
+TAMANO_FUENTE = 11
+TAMANO_FUENTE_ANIO = 10
+
+# La columna de la semana va sombreada en azul claro, como en el oficial.
+COLOR_COLUMNA_SEMANA = "D9E2F3"
+_RELLENO_SEMANA = PatternFill(
+    start_color=COLOR_COLUMNA_SEMANA, end_color=COLOR_COLUMNA_SEMANA, fill_type="solid"
+)
+
+# Color de LETRA que acompaña a cada relleno del semáforo de la serie: el
+# oficial usa las "reglas de resaltado" de Excel, que pintan fondo Y texto
+# (rojo oscuro sobre rosado, verde oscuro sobre verde, ámbar sobre amarillo).
+# Antes acá solo se pintaba el fondo y el número quedaba en negro.
+_TEXTO_POR_RELLENO = {
+    id(_RELLENO_ROJO): config.COLOR_TEXTO_SEMAFORO_ROJO,
+    id(_RELLENO_AMARILLO): config.COLOR_TEXTO_SEMAFORO_AMARILLO,
+    id(_RELLENO_VERDE): config.COLOR_TEXTO_SEMAFORO_VERDE,
+}
+
+# Formato de la fecha de lanzamiento, el del oficial: "7-ago-26".
+FORMATO_FECHA_LANZAMIENTO = "d-mmm-yy"
+
 # Filas en blanco entre la última fila de la serie histórica y el título
 # "Week Ending - ..." del listado de canciones (equivale al gran salto de
 # filas -- "después de la fila 300" -- que tiene la plantilla original;
@@ -123,7 +164,9 @@ def _tier_de_posicion(posicion: int):
 
 
 def _borde_cuadricula():
-    """Borde fino en los cuatro lados, igual al del Market Share."""
+    """Borde fino en los cuatro lados, igual al del Market Share. Se usa en
+    "Detalle Tracks"; "Resumen Total" usa los bordes del oficial (ver
+    _bordear_bloques_pais)."""
     lado = Side(style="thin", color=config.COLOR_BORDE_CUADRICULA)
     return Border(left=lado, right=lado, top=lado, bottom=lado)
 
@@ -141,13 +184,66 @@ def _cuadricular(ws, filas, columnas, borde) -> None:
             ws.cell(row=r, column=c).border = borde
 
 
-def _columnas_de_datos(columna_inicio_por_pais: dict) -> list:
-    """Las columnas que forman la cuadrícula: las tres de la izquierda más
-    las 5 bandas de cada país, sin las separadoras."""
-    columnas = [_COL_ANIO, _COL_MES, _COL_SEMANA]
+def _columnas_de_datos(columna_inicio_por_pais: dict, izquierda=(_COL_ANIO, _COL_MES, _COL_SEMANA)) -> list:
+    """Las columnas que forman la cuadrícula: las fijas de la izquierda más
+    las 5 bandas de cada país, sin las separadoras.
+
+    `izquierda` cambia según el bloque: la serie histórica usa A-C (año,
+    mes, semana) y el listado de canciones B-D (título, fecha, región).
+    """
+    columnas = list(izquierda)
     for col_inicio in columna_inicio_por_pais.values():
         columnas.extend(range(col_inicio, col_inicio + len(config.BANDAS_CHART)))
     return columnas
+
+
+# Bordes de "Resumen Total", los del informe oficial (revisión del
+# 21/09/2026, "colores por país"): en la serie histórica cada país va
+# enmarcado solo por una línea a la izquierda de su primera columna y otra a
+# la derecha de la última -- las celdas de adentro NO llevan bordes, así el
+# semáforo se lee como una franja continua por país. En el listado de
+# canciones, las celdas de cada país llevan una cuadrícula punteada.
+# Negro, como en el oficial.
+_LINEA_BLOQUE = Side(style="thin", color="000000")
+_LINEA_PUNTEADA = Side(style="dotted", color="000000")
+
+
+def _bordear_bloques_pais(ws, filas, columna_inicio_por_pais: dict, filas_combinadas=()) -> None:
+    """Marca el borde izquierdo y derecho de cada bloque de país en `filas`.
+
+    `filas_combinadas` son las filas donde el nombre del país va en una
+    celda combinada sobre las 5 columnas: ahí el borde se le pone a la
+    celda inicial con los dos lados, y openpyxl lo dibuja en el contorno
+    del rango combinado.
+    """
+    ancho = len(config.BANDAS_CHART)
+    for r in filas:
+        for inicio in columna_inicio_por_pais.values():
+            fin = inicio + ancho - 1
+            if r in filas_combinadas:
+                ws.cell(row=r, column=inicio).border = Border(left=_LINEA_BLOQUE, right=_LINEA_BLOQUE)
+            else:
+                ws.cell(row=r, column=inicio).border = Border(left=_LINEA_BLOQUE)
+                ws.cell(row=r, column=fin).border = Border(right=_LINEA_BLOQUE)
+
+
+def _uniformar_fuente(ws) -> None:
+    """Pone Calibri en todas las celdas escritas de la hoja, respetando lo
+    que cada una ya tenía (negrita, color, tamaño si se fijó uno).
+
+    Se hace en una sola pasada al final, en vez de celda por celda, para que
+    ninguna quede sin fuente explícita por olvido: una celda sin nombre de
+    fuente se ve con la fuente por defecto del Excel de quien la abre.
+    """
+    for fila in ws.iter_rows():
+        for celda in fila:
+            if celda.value is None or type(celda).__name__ == "MergedCell":
+                continue
+            f = celda.font
+            celda.font = Font(
+                name=FUENTE, size=f.sz or TAMANO_FUENTE, bold=f.b, italic=f.i,
+                underline=f.u, color=f.color,
+            )
 
 
 def _pintar_posicion(celda, banda: int) -> None:
@@ -235,6 +331,11 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     resumen_cancion = df.groupby("cancion").agg(
         region=("region", "first"),
         isrc=("ISRC", "first"),
+        # Título y artista por separado, para el plan B de las fechas de
+        # lanzamiento: cuando el ISRC no aparece en Spotify se busca por
+        # nombre (ver spotify_release_dates.elegir_por_nombre).
+        titulo=("song_name", "first"),
+        artista=("artist", "first"),
         paises_presente=("country_code", "nunique"),
         suma_posiciones=("position", "sum"),
     )
@@ -293,8 +394,15 @@ def agregar_fecha_lanzamiento(listado: pd.DataFrame, cliente=None) -> pd.DataFra
         listado["fecha_lanzamiento"] = None
         return listado
     try:
+        nombres = None
+        if {"titulo", "artista"} <= set(listado.columns):
+            nombres = {
+                str(isrc).strip(): (titulo, artista)
+                for isrc, titulo, artista in zip(listado["isrc"], listado["titulo"], listado["artista"])
+                if isinstance(isrc, str) and isrc.strip()
+            }
         listado["fecha_lanzamiento"] = spotify_release_dates.resolver_fechas_lanzamiento(
-            listado["isrc"], cliente=cliente
+            listado["isrc"], cliente=cliente, nombres=nombres
         )
     except Exception as e:
         _ULTIMO_AVISO_FECHAS = (
@@ -409,16 +517,11 @@ def _escribir_resumen_total(
     celda_semana.alignment = centrado
     celda_semana.font = negrita_centrada
 
-    # Columna A ("año" en la serie histórica, y "Artist/Título" en el
-    # listado de canciones de más abajo) mucho más ancha de lo que necesita
-    # un año solo, porque tiene que alcanzar para los títulos largos: desde
-    # que la fecha de lanzamiento se movió a la columna B (a pedido del
-    # usuario, ver _escribir_listado_canciones), los títulos ya no pueden
-    # desbordar visualmente hacia B como antes.
-    ws.column_dimensions[get_column_letter(_COL_ANIO)].width = 32
-    ws.column_dimensions[get_column_letter(_COL_MES)].width = 12
-    ws.column_dimensions[get_column_letter(_COL_SEMANA)].width = 10
-    ws.column_dimensions[get_column_letter(_COL_SEPARADOR_INICIAL)].width = 2
+    # Anchos de las columnas fijas, los del informe oficial (ver
+    # _ANCHOS_COLUMNAS_FIJAS): la columna B es la ancha porque ahí va el
+    # título en el listado de canciones de más abajo.
+    for columna, ancho in _ANCHOS_COLUMNAS_FIJAS.items():
+        ws.column_dimensions[get_column_letter(columna)].width = ancho
 
     columna_inicio_por_pais, columna_siguiente_libre = _escribir_bloques_pais(
         ws, _FILA_HEADER_PAIS, _FILA_HEADER_BANDA, aplicar_anchos=True
@@ -428,15 +531,21 @@ def _escribir_resumen_total(
     # primera vez que aparece (igual que la plantilla original -- no está
     # combinado, solo se deja en blanco en las filas siguientes del mismo
     # año).
+    centrado_simple = Alignment(horizontal="center", vertical="center")
     anio_anterior = None
     for i, fila in enumerate(resumen.itertuples(index=False)):
         r = _FILA_PRIMER_DATO + i
         anio = int(fila.anio)
         if anio != anio_anterior:
-            ws.cell(row=r, column=_COL_ANIO, value=anio)
+            celda_anio = ws.cell(row=r, column=_COL_ANIO, value=anio)
+            # Calibri 10, como el oficial: la columna A es angosta.
+            celda_anio.font = Font(name=FUENTE, size=TAMANO_FUENTE_ANIO)
+            celda_anio.alignment = centrado_simple
             anio_anterior = anio
         ws.cell(row=r, column=_COL_MES, value=fila.mes)
-        ws.cell(row=r, column=_COL_SEMANA, value=int(fila.semana))
+        celda_n_semana = ws.cell(row=r, column=_COL_SEMANA, value=int(fila.semana))
+        celda_n_semana.fill = _RELLENO_SEMANA
+        celda_n_semana.alignment = centrado_simple
 
         for pais in config.ORDEN_PAISES_CHART:
             col_inicio = columna_inicio_por_pais[pais]
@@ -447,19 +556,22 @@ def _escribir_resumen_total(
                 relleno = _color_semaforo(banda, valor)
                 if relleno is not None:
                     celda.fill = relleno
+                    celda.font = Font(
+                        name=FUENTE, size=TAMANO_FUENTE, color=_TEXTO_POR_RELLENO[id(relleno)]
+                    )
 
     ws.freeze_panes = f"{get_column_letter(_COL_PRIMER_PAIS)}{_FILA_PRIMER_DATO}"
 
-    # Cuadrícula de la serie histórica: desde la fila de encabezados de país
-    # hasta la última semana. Pedido de la reunión del 14/09/2026, para que
-    # este reporte se lea igual que el Market Share.
-    if len(resumen):
-        _cuadricular(
-            ws,
-            range(_FILA_HEADER_PAIS, _FILA_PRIMER_DATO + len(resumen)),
-            _columnas_de_datos(columna_inicio_por_pais),
-            _borde_cuadricula(),
-        )
+    # Bordes de la serie, los del informe oficial: cada país enmarcado por
+    # una línea a la izquierda y otra a la derecha, desde el encabezado hasta
+    # la última semana, sin bordes adentro (ver _bordear_bloques_pais). La
+    # columna C ("SEMANA / TOP") lleva una línea a la derecha en el
+    # encabezado, igual que el oficial.
+    _bordear_bloques_pais(
+        ws, range(_FILA_HEADER_PAIS, _FILA_PRIMER_DATO + len(resumen)),
+        columna_inicio_por_pais, filas_combinadas=(_FILA_HEADER_PAIS,),
+    )
+    ws.cell(row=_FILA_HEADER_PAIS, column=_COL_SEMANA).border = Border(right=_LINEA_BLOQUE)
 
     ultima_fila_historica = _FILA_PRIMER_DATO + max(len(resumen) - 1, 0)
     fila_listado = ultima_fila_historica + _FILAS_ANTES_DE_LISTADO + 1
@@ -467,6 +579,9 @@ def _escribir_resumen_total(
         ws, df_semana, fila_listado, columna_inicio_por_pais, columna_siguiente_libre,
         cliente_spotify=cliente_spotify,
     )
+
+    # Al final, para que ninguna celda de la hoja quede sin fuente explícita.
+    _uniformar_fuente(ws)
 
 
 def _escribir_listado_canciones(
@@ -497,40 +612,36 @@ def _escribir_listado_canciones(
 
     fecha = pd.Timestamp(df_semana["chart_date"].iloc[0])
     texto_titulo = f"Week Ending - {fecha.day:02d} {config.MESES_ES_ABREV[fecha.month]}, {fecha.year}"
-    celda_titulo = ws.cell(row=fila_inicio, column=_COL_ANIO, value=texto_titulo)
+    celda_titulo = ws.cell(row=fila_inicio, column=_COL_LISTADO_TITULO, value=texto_titulo)
     celda_titulo.font = negrita
 
     fila_header_pais = fila_inicio + 1
     fila_header_banda = fila_header_pais + 1
     fila_primer_dato = fila_header_banda + 1
 
-    celda_cancion = ws.cell(row=fila_header_pais, column=_COL_ANIO, value="Artist/Título")
+    celda_cancion = ws.cell(row=fila_header_pais, column=_COL_LISTADO_TITULO, value="Artist/Título")
     ws.merge_cells(
-        start_row=fila_header_pais, start_column=_COL_ANIO,
-        end_row=fila_header_banda, end_column=_COL_ANIO,
+        start_row=fila_header_pais, start_column=_COL_LISTADO_TITULO,
+        end_row=fila_header_banda, end_column=_COL_LISTADO_TITULO,
     )
     celda_cancion.alignment = centrado
     celda_cancion.font = negrita
 
-    # Fecha de lanzamiento (vía Spotify, ver agregar_fecha_lanzamiento) al
-    # lado del nombre de la canción, antes de "Región" -- así lo pidió el
-    # usuario mostrando la plantilla real (antes estaba al final, después de
-    # "Suma Posiciones"). Va en _COL_MES (columna B), que en las filas del
-    # listado está libre: así NO se corren los bloques de país, que tienen
-    # que seguir alineados con los de la serie histórica de arriba (ambos
-    # usan las mismas columnas, ver _escribir_bloques_pais).
-    celda_fecha_lanz = ws.cell(row=fila_header_pais, column=_COL_MES, value="Fecha Lzto")
+    # Título en B, fecha de lanzamiento en C, región en D: el orden y las
+    # columnas del informe oficial (ver _COL_LISTADO_*). Los bloques de país
+    # siguen empezando en E, alineados con los de la serie histórica.
+    celda_fecha_lanz = ws.cell(row=fila_header_pais, column=_COL_LISTADO_FECHA, value="Fecha Lzto")
     ws.merge_cells(
-        start_row=fila_header_pais, start_column=_COL_MES,
-        end_row=fila_header_banda, end_column=_COL_MES,
+        start_row=fila_header_pais, start_column=_COL_LISTADO_FECHA,
+        end_row=fila_header_banda, end_column=_COL_LISTADO_FECHA,
     )
     celda_fecha_lanz.alignment = centrado
     celda_fecha_lanz.font = negrita
 
-    celda_region = ws.cell(row=fila_header_pais, column=_COL_SEMANA, value="Región")
+    celda_region = ws.cell(row=fila_header_pais, column=_COL_LISTADO_REGION, value="Región")
     ws.merge_cells(
-        start_row=fila_header_pais, start_column=_COL_SEMANA,
-        end_row=fila_header_banda, end_column=_COL_SEMANA,
+        start_row=fila_header_pais, start_column=_COL_LISTADO_REGION,
+        end_row=fila_header_banda, end_column=_COL_LISTADO_REGION,
     )
     celda_region.alignment = centrado
     celda_region.font = negrita
@@ -565,14 +676,17 @@ def _escribir_listado_canciones(
 
     for i, fila in enumerate(listado.itertuples(index=False)):
         r = fila_primer_dato + i
-        ws.cell(row=r, column=_COL_ANIO, value=fila.cancion)
-        fecha_lanzamiento = getattr(fila, "fecha_lanzamiento", None)
-        if pd.notna(fecha_lanzamiento):
-            # Texto, no fecha de Excel a propósito -- Spotify a veces solo
-            # trae año o año-mes (release_date_precision), forzar un
-            # number_format de fecha rompería esos casos parciales.
-            ws.cell(row=r, column=_COL_MES, value=str(fecha_lanzamiento))
-        ws.cell(row=r, column=_COL_SEMANA, value=fila.region)
+        ws.cell(row=r, column=_COL_LISTADO_TITULO, value=fila.cancion)
+        # Fecha de Excel de verdad, con el formato del oficial ("7-ago-26").
+        # Las fechas parciales de Spotify ("2006", "2006-03") se completan
+        # al primer día del período, que es como las muestra el oficial --
+        # ver spotify_release_dates.a_fecha.
+        fecha_lanzamiento = spotify_release_dates.a_fecha(getattr(fila, "fecha_lanzamiento", None))
+        if fecha_lanzamiento is not None:
+            celda_fecha = ws.cell(row=r, column=_COL_LISTADO_FECHA, value=fecha_lanzamiento)
+            celda_fecha.number_format = FORMATO_FECHA_LANZAMIENTO
+            celda_fecha.alignment = Alignment(horizontal="center")
+        ws.cell(row=r, column=_COL_LISTADO_REGION, value=fila.region)
 
         for pais in config.ORDEN_PAISES_CHART:
             col_inicio = columna_inicio_por_pais[pais]
@@ -588,13 +702,21 @@ def _escribir_listado_canciones(
         ws.cell(row=r, column=col_paises, value=int(fila.paises_presente))
         ws.cell(row=r, column=col_suma, value=int(fila.suma_posiciones))
 
-    # Misma cuadrícula que la serie histórica, más las dos columnas del final
-    # (N° Países y Suma Posiciones).
+    # Bordes del listado, los del informe oficial: los encabezados de cada
+    # país enmarcados a izquierda y derecha, y las celdas de posición en una
+    # cuadrícula punteada (también las vacías, para que la fila se pueda
+    # seguir con la vista). Título, fecha y región van sin bordes.
+    _bordear_bloques_pais(
+        ws, (fila_header_pais, fila_header_banda), columna_inicio_por_pais,
+        filas_combinadas=(fila_header_pais,),
+    )
+    punteado = Border(left=_LINEA_PUNTEADA, right=_LINEA_PUNTEADA,
+                      top=_LINEA_PUNTEADA, bottom=_LINEA_PUNTEADA)
     _cuadricular(
         ws,
-        range(fila_header_pais, fila_primer_dato + len(listado)),
-        _columnas_de_datos(columna_inicio_por_pais) + [col_paises, col_suma],
-        _borde_cuadricula(),
+        range(fila_primer_dato, fila_primer_dato + len(listado)),
+        _columnas_de_datos(columna_inicio_por_pais, izquierda=()) + [col_paises, col_suma],
+        punteado,
     )
 
 
@@ -689,6 +811,7 @@ def _escribir_detalle_tracks(ws, df_semana: pd.DataFrame, tabla: pd.DataFrame) -
         range(_DETALLE_COL_POSICION, _DETALLE_COL_PRIMER_PAIS + len(columnas_pais)),
         _borde_cuadricula(),
     )
+    _uniformar_fuente(ws)
 
 
 def generar_reporte(

@@ -103,3 +103,19 @@ def test_texto_ultima_semana_sigue_la_fecha_del_archivo_no_el_numero(tmp_path):
 
     gui.generar(str(fuente), "36")   # mismo archivo, otro número
     assert gui.texto_ultima_semana() == antes
+
+
+def test_texto_ultima_semana_bmat(tmp_path):
+    assert "todavía no hay" in gui.texto_ultima_semana_bmat()
+    from src import bmat_calculo
+    bmat_calculo.guardar_semana(2026, 36, "CO", pd.DataFrame(
+        [{"banda": 10, "label_group": "Universal", "tracks": 1, "streams_millones": 1.0, "pct_streams": 1.0}]))
+    assert gui.texto_ultima_semana_bmat() == "BMAT - última semana cargada: 36 de 2026"
+
+
+def test_generar_bmat_propaga_el_error_de_carpeta_sin_wk(tmp_path, monkeypatch):
+    from src import bmat_calculo, bmat_clasificacion
+    monkeypatch.setattr(bmat_calculo, "SEED_BMAT_CSV", tmp_path / "no.csv.gz")
+    monkeypatch.setattr(bmat_clasificacion, "SEED_CLASIFICACION_CSV", tmp_path / "no2.csv.gz")
+    with pytest.raises(ValueError, match="No encontré archivos WK"):
+        gui.generar_bmat(str(tmp_path))

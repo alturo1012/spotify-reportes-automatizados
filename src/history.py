@@ -47,7 +47,9 @@ SEED_DIR = config.ROOT_DIR / "data" / "history" / "seed"
 SEED_CHART_CSV = SEED_DIR / "seed_chart_band_weekly.csv"
 SEED_MS_CSV = SEED_DIR / "seed_ms_label_weekly.csv"
 SEED_MS_BANDAS_CSV = SEED_DIR / "seed_ms_band_label_weekly.csv"
-SEED_BMAT_CSV = SEED_DIR / "seed_bmat_weekly.csv"
+# BMAT de los 11 mercados, hasta la semana 35 de 2026 (comprimido: son
+# ~133.000 filas). pandas lo lee igual que un CSV normal.
+SEED_BMAT_CSV = SEED_DIR / "seed_bmat_weekly.csv.gz"
 
 
 def conectar() -> sqlite3.Connection:
@@ -139,15 +141,20 @@ def _conectar() -> sqlite3.Connection:
     return conn
 
 
-# Las cinco tablas de histórico, en el orden en que se siembran. NO incluye
-# los cachés de Spotify, que viven en la misma base pero no son histórico:
-# `vaciar_historico()` borra solo estas.
+# Las cuatro tablas de histórico de Spotify, en el orden en que se siembran.
+# NO incluye los cachés de Spotify, que viven en la misma base pero no son
+# histórico: `vaciar_historico()` borra solo estas.
+#
+# Tampoco incluye `bmat_weekly`: BMAT numera sus semanas con el número del
+# archivo (WK35) y no depende del orden de carga, así que no hay por qué
+# borrarlo al reconstruir la numeración de Spotify con
+# scripts/recargar_semanas.py -- y borrarlo perdería las semanas BMAT ya
+# calculadas desde la 36.
 TABLAS_HISTORICO = (
     "chart_band_weekly",
     "ms_label_weekly",
     "ms_band_label_weekly",
     "chart_track_weekly",
-    "bmat_weekly",
 )
 
 
@@ -416,7 +423,7 @@ def ultima_fecha_cargada():
 
 
 def vaciar_historico() -> None:
-    """Borra las cinco tablas de histórico, dejando intacto todo lo demás de
+    """Borra las cuatro tablas de histórico de Spotify, dejando intacto todo lo demás de
     la base -- en particular los cachés de Spotify (`spotify_isrc_cache` y
     `spotify_release_date_cache`), que costaron llamadas a la API y no
     tienen por qué perderse.

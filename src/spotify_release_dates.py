@@ -43,9 +43,12 @@ archivos completos). Cambios respecto al código original:
   de este módulo y deja la columna en blanco para esa corrida en vez de
   fallar. La próxima corrida lo vuelve a intentar.
 """
+import datetime
 import os
+import re
 import sqlite3
 import time
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -180,6 +183,129 @@ def _crear_tablas(conn) -> None:
     )
 
 
+_FECHA_INICIAL = re.compile(r"^\s*(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?")
+
+
+def a_fecha(valor):
+    """Convierte lo que venga como fecha de lanzamiento en un `date` de
+    verdad, o None si no hay nada utilizable.
+
+    Spotify a veces no sabe el día, o ni siquiera el mes
+    (`release_date_precision`), y devuelve "2006" o "2006-03". El informe
+    oficial muestra esas fechas como el primer día del período -- por
+    ejemplo "El Teléfono / Héctor 'El Father'" figura como 1-ene-06 --, así
+    que se completa igual: año solo -> 1 de enero; año-mes -> día 1.
+
+    Acepta también fechas ya armadas (datetime, Timestamp) y el formato con
+    hora que devuelve SQLite ("2006-01-01 00:00:00").
+    """
+    if valor is None:
+        return None
+    if isinstance(valor, float) and pd.isna(valor):
+        return None
+    if isinstance(valor, (pd.Timestamp, datetime.datetime)):
+        return valor.date()
+    if isinstance(valor, datetime.date):
+        return valor
+    coincidencia = _FECHA_INICIAL.match(str(valor))
+    if not coincidencia:
+        return None
+    anio, mes, dia = coincidencia.groups()
+    try:
+        return datetime.date(int(anio), int(mes or 1), int(dia or 1))
+    except ValueError:
+        return None
+
+
+# --- Búsqueda por nombre, cuando el ISRC no aparece en Spotify ------------
+
+_ENTRE_PARENTESIS = re.compile(r"[\(\[][^\)\]]*[\)\]]")
+# Palabras que describen la EDICIÓN y no la canción: con o sin ellas es la
+# misma grabación, así que no deben impedir la coincidencia. Ojo: NO están
+# "remix", "en vivo", "live", "acoustic" -- esas sí son otra grabación, con
+# otra fecha.
+_PALABRAS_DE_EDICION = re.compile(
+    r"\b(remaster(ed|izado|izada)?|remasterizad[oa]|version|versi[oó]n|\d{4})\b"
+)
+
+
+def _normalizar(texto) -> str:
+    """Minúsculas, sin tildes, sin lo que va entre paréntesis ni signos."""
+    if not isinstance(texto, str):
+        return ""
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c)).lower()
+    texto = _ENTRE_PARENTESIS.sub(" ", texto)
+    texto = re.sub(r"[^a-z0-9ñ ]+", " ", texto)
+    return " ".join(texto.split())
+
+
+def _titulo_comparable(titulo) -> str:
+    return " ".join(_PALABRAS_DE_EDICION.sub(" ", _normalizar(titulo)).split())
+
+
+def _artista_principal(artista) -> str:
+    """El primer artista de "A, B", "A & B", "A feat. B", "A x B"."""
+    if not isinstance(artista, str):
+        return ""
+    primero = re.split(r",|&| feat\.? | ft\.? | x ", artista, maxsplit=1, flags=re.IGNORECASE)[0]
+    return _normalizar(primero)
+
+
+def _coincide_artista(artistas_resultado, artista) -> bool:
+    """¿Alguno de los artistas del resultado es el artista buscado?
+
+    Vale si coincide con el artista principal, con el texto completo (los
+    dúos como "Wisin & Yandel" figuran como UN artista en Spotify), o si
+    aparece como palabra completa dentro del texto de la fuente ("Bad Bunny,
+    Jhay Cortez" contiene "jhay cortez"). El largo mínimo evita que un
+    nombre de dos letras coincida con cualquier cosa.
+    """
+    completo = _normalizar(artista)
+    principal = _artista_principal(artista)
+    for nombre in artistas_resultado:
+        n = _normalizar(nombre)
+        if not n:
+            continue
+        if n == principal or n == completo:
+            return True
+        if len(n) >= 4 and f" {n} " in f" {completo} ":
+            return True
+    return False
+
+
+def elegir_por_nombre(items: list, titulo, artista):
+    """De los resultados de una búsqueda de Spotify por nombre, el track_id
+    que corresponde a (titulo, artista), o None si ninguno coincide.
+
+    Es estricto a propósito: el nombre tiene que ser el mismo (sin contar
+    paréntesis, tildes ni "Remasterizado 2016") y el artista principal tiene
+    que estar entre los artistas del resultado. Una fecha equivocada es
+    peor que una celda vacía -- una versión en vivo o un remix tienen otra
+    fecha, y con este criterio no se confunden con la original.
+
+    Si coinciden varios (la misma canción en el álbum original y en un
+    recopilatorio posterior), se queda con el de álbum MÁS ANTIGUO: la
+    fecha de lanzamiento es la del original.
+    """
+    buscado = _titulo_comparable(titulo)
+    if not buscado or not _normalizar(artista):
+        return None
+    candidatos = []
+    for item in items or []:
+        if not item or _titulo_comparable(item.get("name")) != buscado:
+            continue
+        nombres_artistas = [a.get("name") for a in item.get("artists") or []]
+        if not _coincide_artista(nombres_artistas, artista):
+            continue
+        fecha = a_fecha((item.get("album") or {}).get("release_date"))
+        candidatos.append((fecha or datetime.date.max, item.get("id")))
+    if not candidatos:
+        return None
+    candidatos.sort(key=lambda par: par[0])
+    return candidatos[0][1]
+
+
 class SpotifyReleaseDateClient:
     """Envuelve spotipy (búsqueda por ISRC + fechas de lanzamiento en
     lote), con reintento automático ante 429. Requiere SPOTIFY_CLIENT_ID y
@@ -224,6 +350,20 @@ class SpotifyReleaseDateClient:
         items = resultado.get("tracks", {}).get("items", [])
         return items[0]["id"] if items else None
 
+    def buscar_track_id_por_nombre(self, titulo, artista):
+        """Plan B cuando el ISRC no aparece: busca por nombre y artista y
+        se queda con el resultado que coincide de verdad (ver
+        elegir_por_nombre). None si no hay ninguno confiable."""
+        titulo_limpio = " ".join(_ENTRE_PARENTESIS.sub(" ", str(titulo or "")).split())
+        principal = re.split(r",|&| feat\.? | ft\.? | x ", str(artista or ""), maxsplit=1,
+                             flags=re.IGNORECASE)[0].strip()
+        if not titulo_limpio or not principal:
+            return None
+        consulta = f'track:"{titulo_limpio}" artist:"{principal}"'
+        resultado = self._con_reintento(self.sp.search, consulta, type="track", limit=10)
+        items = resultado.get("tracks", {}).get("items", [])
+        return elegir_por_nombre(items, titulo, artista)
+
     def fechas_de_lanzamiento(self, track_ids: list) -> dict:
         """Lote de hasta 50 track_ids -> {track_id: release_date}."""
         fechas = {}
@@ -235,7 +375,8 @@ class SpotifyReleaseDateClient:
         return fechas
 
 
-def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateClient = None) -> pd.Series:
+def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateClient = None,
+                                nombres: dict = None) -> pd.Series:
     """Dada una Series de códigos ISRC, devuelve una Series alineada (mismo
     índice) con la fecha de lanzamiento de cada uno ("YYYY-MM-DD", o a veces
     solo "YYYY"/"YYYY-MM" si Spotify no tiene el día/mes exacto -- se deja
@@ -296,6 +437,43 @@ def resolver_fechas_lanzamiento(isrcs: pd.Series, cliente: SpotifyReleaseDateCli
                 nuevas_filas,
             )
             conn.commit()
+
+        # Plan B para los ISRC que Spotify no encuentra: buscar por nombre y
+        # artista (ver elegir_por_nombre). Es el caso de varios clásicos de
+        # catálogo -- "Para No Verte Más", "Cuando Me Enamoro" -- que salían
+        # sin fecha y había que completar a mano.
+        #
+        # Incluye los que YA estaban cacheados como "no encontrado": esos se
+        # reintentan por nombre en cada corrida hasta que aparezcan (son muy
+        # pocos, un puñado de llamadas). Si aparecen, se guarda el track_id
+        # en la caché y ya no se vuelven a buscar.
+        sin_track = [
+            isrc for isrc in isrcs_unicos
+            if track_id_por_isrc.get(isrc) is None and nombres and isrc in nombres
+        ]
+        if sin_track:
+            if cliente is None:
+                try:
+                    cliente = SpotifyReleaseDateClient()
+                except RuntimeError:
+                    # Sin credenciales no hay plan B, pero lo ya resuelto
+                    # tiene que seguir saliendo: no se aborta nada.
+                    cliente = None
+            buscar = getattr(cliente, "buscar_track_id_por_nombre", None)
+            if buscar is not None:
+                recuperados = []
+                for isrc in sin_track:
+                    titulo, artista = nombres[isrc]
+                    track_id = _texto_o_none(buscar(titulo, artista))
+                    if track_id is not None:
+                        track_id_por_isrc[isrc] = track_id
+                        recuperados.append((isrc, track_id))
+                if recuperados:
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO spotify_isrc_cache (isrc, track_id) VALUES (?, ?)",
+                        recuperados,
+                    )
+                    conn.commit()
 
         # OJO: el filtro tiene que ser `is not None`, no `if tid` -- ver
         # _texto_o_none: un NaN pasaría el `if tid` (bool(nan) es True) y

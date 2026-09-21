@@ -3,6 +3,8 @@ tocan data/history/universal_data.db de verdad).
 
 Corre con: pytest tests/test_chart_semanal.py -v
 """
+import datetime
+
 import openpyxl
 import pandas as pd
 import pytest
@@ -329,9 +331,11 @@ def test_resumen_total_incluye_el_listado_de_canciones_debajo_de_la_serie_histor
     # Con una sola semana histórica, la serie ocupa la fila 7; el listado
     # empieza 2 filas en blanco después (filas 8-9), título en la fila 10,
     # encabezados en 11/12, primera canción en la 13.
-    assert ws.cell(row=10, column=1).value == "Week Ending - 18 jun, 2026"
-    assert ws.cell(row=11, column=1).value == "Artist/Título"
-    assert ws.cell(row=11, column=3).value == "Región"
+    # Título en B, fecha en C, región en D: como el informe oficial.
+    assert ws.cell(row=10, column=2).value == "Week Ending - 18 jun, 2026"
+    assert ws.cell(row=11, column=2).value == "Artist/Título"
+    assert ws.cell(row=11, column=3).value == "Fecha Lzto"
+    assert ws.cell(row=11, column=4).value == "Región"
     assert ws.cell(row=11, column=5).value == "COLOMBIA"
     assert [ws.cell(row=12, column=c).value for c in range(5, 10)] == [10, 30, 50, 100, 200]
     # columnas finales sin nombre en la plantilla original -> las nombramos.
@@ -341,8 +345,8 @@ def test_resumen_total_incluye_el_listado_de_canciones_debajo_de_la_serie_histor
     assert ws.cell(row=11, column=col_paises).value == "N° Países"
     assert ws.cell(row=11, column=col_suma).value == "Suma Posiciones"
 
-    assert ws.cell(row=13, column=1).value == "x / a"
-    assert ws.cell(row=13, column=3).value == "Latin"
+    assert ws.cell(row=13, column=2).value == "x / a"
+    assert ws.cell(row=13, column=4).value == "Latin"
     assert ws.cell(row=13, column=5).value == 1  # CO, banda 10
     assert ws.cell(row=13, column=col_paises).value == 1
     assert ws.cell(row=13, column=col_suma).value == 1
@@ -494,15 +498,17 @@ def test_listado_canciones_incluye_fecha_de_lanzamiento_con_cliente_de_prueba(tm
     wb = openpyxl.load_workbook(salida)
     ws = wb[config.CHART_SHEET_RESUMEN]
 
-    # La fecha va en la columna B (_COL_MES), entre "Artist/Título" (A) y
-    # "Región" (C) -- así lo pidió el usuario mostrando la plantilla real.
-    # Importante: no debe correr los bloques de país (siguen empezando en la
-    # columna 5, alineados con la serie histórica de arriba).
-    assert ws.cell(row=11, column=2).value == "Fecha Lzto"
-    assert ws.cell(row=13, column=2).value == "2020-03-15"
-    assert ws.cell(row=11, column=1).value == "Artist/Título"
-    assert ws.cell(row=11, column=3).value == "Región"
-    assert ws.cell(row=13, column=3).value == "Latin"
+    # Como el informe oficial: título en B, fecha en C, región en D. Los
+    # bloques de país siguen empezando en la columna 5 (E), alineados con la
+    # serie histórica de arriba.
+    assert ws.cell(row=11, column=2).value == "Artist/Título"
+    assert ws.cell(row=11, column=3).value == "Fecha Lzto"
+    assert ws.cell(row=11, column=4).value == "Región"
+    assert ws.cell(row=13, column=4).value == "Latin"
+    # La fecha es una fecha de Excel de verdad, con el formato del oficial.
+    celda_fecha = ws.cell(row=13, column=3)
+    assert celda_fecha.value.date() == datetime.date(2020, 3, 15)
+    assert celda_fecha.number_format == chart_semanal.FORMATO_FECHA_LANZAMIENTO
 
 
 def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypatch):
@@ -530,8 +536,8 @@ def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypa
 
     wb = openpyxl.load_workbook(salida)
     ws = wb[config.CHART_SHEET_RESUMEN]
-    assert ws.cell(row=11, column=2).value == "Fecha Lzto"
-    assert ws.cell(row=13, column=2).value is None
+    assert ws.cell(row=11, column=3).value == "Fecha Lzto"
+    assert ws.cell(row=13, column=3).value is None
 
 
 # --- semáforo de la posición en el listado de canciones (reunión 14/09/2026) ---
@@ -606,7 +612,7 @@ def _tiene_todos_los_bordes(celda) -> bool:
     return all(lado is not None and lado.style for lado in lados)
 
 
-def test_resumen_total_y_detalle_tracks_salen_en_cuadricula(tmp_path):
+def test_bordes_de_resumen_total_como_el_oficial_y_detalle_en_cuadricula(tmp_path):
     chart_csv = tmp_path / "seed_chart.csv"
     pd.DataFrame([
         {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO",
@@ -628,31 +634,43 @@ def test_resumen_total_y_detalle_tracks_salen_en_cuadricula(tmp_path):
 
     wb = openpyxl.load_workbook(salida)
     ws = wb[config.CHART_SHEET_RESUMEN]
-    # Serie histórica. Ojo con las celdas combinadas: en la fila 5 las tres
-    # columnas de la izquierda y el nombre del país llevan el borde en su
-    # celda inicial, y el resto del rango sale sin borde al releer (así
-    # guarda openpyxl los rangos combinados; en Excel se ve el recuadro).
-    for col in (1, 2, 3, 5):
-        assert _tiene_todos_los_bordes(ws.cell(row=5, column=col)), col
-    for col in (5, 9):                       # fila de bandas (10..200) de CO
-        assert _tiene_todos_los_bordes(ws.cell(row=6, column=col)), col
-    for fila in (7, 8):                      # semana sembrada y semana nueva
-        for col in (1, 2, 3, 5, 9):
-            assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col)), (fila, col)
-    # La columna separadora entre bloques de país queda SIN borde.
-    assert not _tiene_todos_los_bordes(ws.cell(row=7, column=4))
-    assert not _tiene_todos_los_bordes(ws.cell(row=7, column=10))
 
-    # Listado de canciones: encabezados y la fila de la canción.
+    def estilo(c, lado):
+        s = getattr(c.border, lado)
+        return s.style if s is not None else None
+
+    # SERIE: como el informe oficial, cada país enmarcado por una línea a la
+    # izquierda de su primera columna (E) y otra a la derecha de la última
+    # (I); adentro, sin bordes. Revisión del 21/09/2026.
+    for fila in (6, 7, 8):
+        assert estilo(ws.cell(row=fila, column=5), "left") == "thin", fila
+        assert estilo(ws.cell(row=fila, column=9), "right") == "thin", fila
+        interior = ws.cell(row=fila, column=7)
+        assert all(estilo(interior, l) is None for l in ("left", "right", "top", "bottom")), fila
+    # tampoco arriba/abajo de las celdas de datos
+    assert estilo(ws.cell(row=7, column=5), "top") is None
+    assert estilo(ws.cell(row=7, column=5), "bottom") is None
+    # las columnas fijas (año, mes, semana) y la separadora, sin bordes
+    for col in (1, 2, 3, 4, 10):
+        c = ws.cell(row=7, column=col)
+        assert all(estilo(c, l) is None for l in ("left", "right", "top", "bottom")), col
+
+    # LISTADO: las celdas de posición de cada país en cuadrícula punteada
+    # (también las vacías); título, fecha y región sin bordes.
     fila_titulo = next(r for r in range(1, ws.max_row + 1)
-                       if str(ws.cell(row=r, column=1).value or "").startswith("Week Ending"))
-    for col in (1, 2, 3, 5):                 # encabezado (combinado hacia abajo)
-        assert _tiene_todos_los_bordes(ws.cell(row=fila_titulo + 1, column=col)), col
-    assert _tiene_todos_los_bordes(ws.cell(row=fila_titulo + 2, column=5))  # bandas
-    for col in (1, 2, 3, 5):                 # primera canción
-        assert _tiene_todos_los_bordes(ws.cell(row=fila_titulo + 3, column=col)), col
+                       if str(ws.cell(row=r, column=2).value or "").startswith("Week Ending"))
+    primera = fila_titulo + 3
+    for col in (5, 7, 9):
+        c = ws.cell(row=primera, column=col)
+        assert all(estilo(c, l) == "dotted" for l in ("left", "right", "top", "bottom")), col
+    for col in (2, 3, 4):
+        c = ws.cell(row=primera, column=col)
+        assert all(estilo(c, l) is None for l in ("left", "right", "top", "bottom")), col
+    # encabezado del listado: el país enmarcado a izquierda y derecha
+    assert estilo(ws.cell(row=fila_titulo + 2, column=5), "left") == "thin"
+    assert estilo(ws.cell(row=fila_titulo + 2, column=9), "right") == "thin"
 
-    # Detalle Tracks: posición + países, sin separadoras.
+    # Detalle Tracks: sigue en cuadrícula completa.
     det = wb[config.CHART_SHEET_DETALLE]
     for fila in (2, 3):
         for col in (1, 2):
@@ -734,8 +752,57 @@ def test_el_detalle_cuadra_con_la_serie_historica(tmp_path):
     ws = openpyxl.load_workbook(salida)[config.CHART_SHEET_RESUMEN]
     serie_top10 = ws.cell(row=7, column=5).value          # CO, banda 10
     fila_tit = next(r for r in range(1, ws.max_row + 1)
-                    if str(ws.cell(row=r, column=1).value or "").startswith("Week Ending"))
+                    if str(ws.cell(row=r, column=2).value or "").startswith("Week Ending"))
     en_detalle = sum(1 for r in range(fila_tit + 3, ws.max_row + 1)
                      if isinstance(ws.cell(row=r, column=5).value, int))
     assert serie_top10 == 2
     assert en_detalle == serie_top10
+
+
+# --- formato igual al informe oficial (revisión del 21/09/2026) ---
+
+def _reporte_con_una_semana(tmp_path):
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO", "banda": 10, "conteo_universal": c}
+        for c in (1,)
+    ] + [
+        {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO", "banda": b, "conteo_universal": v}
+        for b, v in ((30, 9), (50, 20))       # 9 = justo el objetivo; 20 = por encima
+    ]).to_csv(chart_csv, index=False)
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+    df_semana = _semana_con_varios_sellos()
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+    return openpyxl.load_workbook(salida)
+
+
+def test_todas_las_celdas_van_en_calibri(tmp_path):
+    # Sin nombre de fuente, Excel usa la fuente por defecto de quien abre el
+    # archivo y el reporte se ve distinto al oficial.
+    wb = _reporte_con_una_semana(tmp_path)
+    for ws in wb.worksheets:
+        sin_calibri = [c.coordinate for fila in ws.iter_rows() for c in fila
+                       if c.value is not None and type(c).__name__ != "MergedCell"
+                       and c.font.name != "Calibri"]
+        assert sin_calibri == [], (ws.title, sin_calibri[:5])
+
+
+def test_el_semaforo_de_la_serie_pinta_fondo_y_texto(tmp_path):
+    ws = _reporte_con_una_semana(tmp_path)[config.CHART_SHEET_RESUMEN]
+    def texto(c): return str(c.font.color.rgb)[-6:]
+    rojo, amarillo, verde = (ws.cell(row=7, column=c) for c in (5, 6, 7))   # CO 10/30/50
+    assert texto(rojo) == config.COLOR_TEXTO_SEMAFORO_ROJO          # 1 < 3
+    assert texto(amarillo) == config.COLOR_TEXTO_SEMAFORO_AMARILLO  # 9 == 9
+    assert texto(verde) == config.COLOR_TEXTO_SEMAFORO_VERDE        # 20 > 15
+
+
+def test_columnas_fijas_con_los_anchos_y_colores_del_oficial(tmp_path):
+    ws = _reporte_con_una_semana(tmp_path)[config.CHART_SHEET_RESUMEN]
+    anchos = {c: round(ws.column_dimensions[c].width, 1) for c in "ABCD"}
+    assert anchos == {"A": 4.9, "B": 29.6, "C": 10.6, "D": 7.4}
+    semana = ws.cell(row=7, column=3)
+    assert str(semana.fill.start_color.rgb)[-6:] == chart_semanal.COLOR_COLUMNA_SEMANA
+    assert ws.cell(row=7, column=1).font.sz == chart_semanal.TAMANO_FUENTE_ANIO
