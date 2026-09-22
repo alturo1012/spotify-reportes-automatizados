@@ -107,7 +107,7 @@ class VentanaBMAT(tk.Toplevel):
         tk.Label(self, textvariable=self.estado_hist, fg="#1D7A3E", font=("Segoe UI", 9, "bold")).pack(
             anchor="w", padx=14, pady=(14, 0))
 
-        tk.Label(self, text="1. Carpeta con el archivo WK de BMAT de la semana (ej. WK36-CO.xlsx):").pack(
+        tk.Label(self, text="1. Carpeta con los archivos WK de BMAT de la semana (WK36-CO.xlsx, ...):").pack(
             anchor="w", padx=14, pady=(14, 4))
         f1 = tk.Frame(self)
         f1.pack(fill="x", padx=14)
@@ -141,7 +141,7 @@ class VentanaBMAT(tk.Toplevel):
     def _generar(self):
         carpeta = self.carpeta_var.get().strip()
         if not carpeta:
-            messagebox.showerror("Falta la carpeta", "Elige la carpeta con el archivo WK de BMAT (ej. WK36-CO.xlsx).", parent=self)
+            messagebox.showerror("Falta la carpeta", "Elige la carpeta con los archivos WK de BMAT de la semana.", parent=self)
             return
         self.boton.config(state="disabled")
         self.estado.set("Generando, un momento...")

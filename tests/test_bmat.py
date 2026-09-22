@@ -81,7 +81,7 @@ def test_buscar_fuentes_rechaza_semanas_mezcladas(tmp_path):
     for nombre in ["WK36-CO.xlsx", "WK36-PE.xlsx", "notas.xlsx"]:
         (tmp_path / nombre).write_bytes(b"")
     assert set(bmat_calculo.buscar_fuentes(tmp_path, ["CO", "PE"])) == {"CO", "PE"}
-    assert set(bmat_calculo.buscar_fuentes(tmp_path)) == {"CO"}   # hoy solo Colombia
+    assert set(bmat_calculo.buscar_fuentes(tmp_path, ["CO"])) == {"CO"}
     (tmp_path / "WK35-PE.xlsx").write_bytes(b"")
     with pytest.raises(ValueError, match="varias semanas"):
         bmat_calculo.buscar_fuentes(tmp_path, ["CO", "PE"])
@@ -302,7 +302,7 @@ def _escribir_wk(carpeta, nombre, n, isrc_prefijo, distribuidora="Universal Musi
     df.to_excel(carpeta / nombre, index=False)
 
 
-def test_generar_semana_completa_y_revision(tmp_path):
+def test_generar_semana_completa_y_revision(tmp_path, monkeypatch):
     carpeta = tmp_path / "wk36"
     carpeta.mkdir()
     _escribir_wk(carpeta, "WK36-CO.xlsx", 250, "CO")
@@ -315,6 +315,7 @@ def test_generar_semana_completa_y_revision(tmp_path):
                  ).to_csv(semilla, index=False, compression="gzip")
     clasif.sembrar(semilla)
 
+    monkeypatch.setattr(config, "BMAT_REPORTES_ACTIVOS", ["COL"])
     r = bmat_proceso.generar_semana(carpeta, salida=tmp_path / "out", hoy=date(2026, 9, 28))
     assert (r.anio, r.semana) == (2026, 36)
     assert r.mercados == ["CO"]                                # el WK36-CR se ignora
@@ -358,3 +359,17 @@ def test_intermedio_puede_llevar_las_hojas_opcionales(tmp_path):
     ruta = bmat_calculo.escribir_intermedio(tmp_path / "x.xlsx", "CO", 2026, 36, df, bandas,
                                             config.BMAT_HOJAS_INTERMEDIO_DISPONIBLES)
     assert openpyxl.load_workbook(ruta).sheetnames[-2:] == ["TOP 50 - Posiciones UMG", "Archivo Base"]
+
+
+def test_por_defecto_se_generan_los_cuatro_reportes(tmp_path):
+    carpeta = tmp_path / "wk36"
+    carpeta.mkdir()
+    for m, n in [("CO", 20), ("PE", 20), ("EC", 20), ("CAM", 20), ("PA", 20)]:
+        _escribir_wk(carpeta, f"WK36-{m}.xlsx", n, m)
+    r = bmat_proceso.generar_semana(carpeta, salida=tmp_path / "out", hoy=date(2026, 9, 28))
+    assert r.mercados == ["CO", "PE", "EC", "CAM", "PA"]
+    assert [p.name for p in r.reportes] == [
+        "MS BMAT COL a Sem 36 de 2026.xlsx", "MS BMAT Peru a Sem 36 de 2026.xlsx",
+        "MS BMAT Ecuador a Sem 36 de 2026.xlsx", "MS BMAT CAM a Sem 36 de 2026.xlsx"]
+    assert "Top 3000 BMAT PN a sem 36 de 2026.xlsx" in [p.name for p in r.intermedios]
+    assert any("faltó el WK36" in a and "Costa Rica" in a for a in r.avisos)
