@@ -131,10 +131,36 @@ def test_streams_catalogo_por_sello_sin_el_error_de_la_plantilla():
     df[config.BMAT_COL_LANZAMIENTO] = ["2020-05-01", "2025-01-01", "2023-12-31", None]
     df["Sello"] = ["Warner", "Warner", "Virgin", "Warner"]
     t = bmat_calculo.streams_catalogo(df)
-    assert t.loc["Warner", "Catalogo"] == 10.0 and t.loc["Warner", "FrontLine"] == 20.0
-    assert t.loc["Warner", "Sin fecha"] == 40.0
+    assert list(t.columns) == ["Catalogo", "FrontLine"]
+    # 10 de catálogo + 40 del track sin fecha, que cuenta como catálogo
+    assert t.loc["Warner", "Catalogo"] == 50.0 and t.loc["Warner", "FrontLine"] == 20.0
     assert t.loc["Virgin", "Catalogo"] == 30.0          # el corte es inclusive
     assert t.loc["Sony"].sum() == 0.0
+
+
+def test_semaforo_del_resumen():
+    verde = bmat_calculo._semaforo({"Universal": 14, "Sony": 9, "Warner": 13})
+    assert list(verde) == ["Universal"] and verde["Universal"] == bmat_calculo._VERDE
+    empate = bmat_calculo._semaforo({"Universal": 4, "Ingrooves": 4, "Sony": 1})
+    assert empate == {"Universal": bmat_calculo._AMARILLO, "Ingrooves": bmat_calculo._AMARILLO}
+    rojo = bmat_calculo._semaforo({"Universal": 15, "Sony": 24, "Warner": 22, "Virgin": 3})
+    assert set(rojo) == {"Sony", "Warner"} and rojo["Sony"] == bmat_calculo._ROJO
+    assert bmat_calculo._semaforo({"Universal": 0, "Sony": 0}) == {}   # banda vacía, sin color
+
+
+def test_resumen_pinta_el_semaforo(tmp_path):
+    df = _fuente([(p, f"I{p}", "d", 1000.0 * (11 - p), f"T{p}", "a") for p in range(1, 11)])
+    df["Sello"] = ["Universal"] * 4 + ["Sony"] * 6        # Sony le gana a Universal
+    df["Disqueras"] = df["Sello"]
+    bandas = bmat_calculo.calcular_bandas(df, "CO")
+    ruta = bmat_calculo.escribir_intermedio(tmp_path / "x.xlsx", "CO", 2026, 36, df, bandas)
+    ws = openpyxl.load_workbook(ruta)["Resumen"]
+    assert ws.cell(row=5, column=2).value == 4                     # TRACKS Universal Top 10
+    assert ws.cell(row=5, column=2).fill.fill_type is None          # Universal no lidera: sin color
+    assert ws.cell(row=8, column=2).value == 6                      # Sony
+    assert ws.cell(row=8, column=2).fill.fgColor.rgb.endswith("FFC7CE")
+    assert ws.cell(row=13, column=2).value == 10                    # Total, sin color
+    assert ws.cell(row=13, column=2).fill.fill_type is None
 
 
 # --- clasificación ------------------------------------------------------------------

@@ -278,6 +278,30 @@ _FINO = Side(style="thin", color="808080")
 _BORDE = Border(left=_FINO, right=_FINO, top=_FINO, bottom=_FINO)
 _CENTRO = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+# Semáforo de la hoja "Resumen", por banda y medida (tracks, streams y %):
+# rojo en los sellos que le ganan a Universal, verde en Universal cuando le
+# gana a todos, y amarillo cuando Universal empata en el primer puesto (el
+# amarillo va en Universal y en el sello con el que empata).
+_ROJO = (PatternFill("solid", start_color="FFC7CE", end_color="FFC7CE"), Font(color="9C0006"))
+_VERDE = (PatternFill("solid", start_color="C6EFCE", end_color="C6EFCE"), Font(color="006100"))
+_AMARILLO = (PatternFill("solid", start_color="FFEB9C", end_color="FFEB9C"), Font(color="9C6500"))
+
+
+def _semaforo(valores: dict) -> dict:
+    """{sello: valor} -> {sello: (relleno, fuente)} con la regla de arriba.
+    Si está todo en cero no pinta nada."""
+    universal = float(valores.get("Universal") or 0.0)
+    otros = {s: float(v or 0.0) for s, v in valores.items() if s != "Universal"}
+    mejor_otros = max(otros.values(), default=0.0)
+    if universal <= 0 and mejor_otros <= 0:
+        return {}
+    if universal > mejor_otros:
+        return {"Universal": _VERDE}
+    if universal == mejor_otros:
+        empatados = {s: _AMARILLO for s, v in otros.items() if v == universal}
+        return {"Universal": _AMARILLO, **empatados}
+    return {s: _ROJO for s, v in otros.items() if v > universal}
+
 # Orden y nombres de "Streams Catalogo", como en la plantilla, con sus grupos.
 _GRUPOS_CATALOGO = [
     ("Universal + Ingrooves + Virgin", ["Universal", "Virgin", "Ingrooves"]),
@@ -322,7 +346,11 @@ def _movimiento(df):
 
 
 def _hoja_resumen(ws, bandas, etiqueta):
-    _titulo(ws, f"Resumen BMAT - {etiqueta}", "Tracks, streams (millones) y % de streams por sello y banda.")
+    """Las tres tablas de la semana (tracks, streams y %) por sello y banda,
+    con el semáforo de _semaforo() en cada columna."""
+    _titulo(ws, f"Resumen BMAT - {etiqueta}",
+            "Tracks, streams (millones) y % de streams por sello y banda. "
+            "Rojo: le gana a Universal. Verde: Universal lidera. Amarillo: empate en el primer puesto.")
     lista_bandas = sorted(bandas["banda"].unique())
     fila = 4
     for nombre, campo, formato in [("TRACKS", "tracks", "#,##0"),
@@ -334,14 +362,19 @@ def _hoja_resumen(ws, bandas, etiqueta):
             c.border = _BORDE
             if sello == "Total":
                 c.font = _NEGRITA
-            for j, b in enumerate(lista_bandas, start=2):
-                sub = bandas[bandas["banda"] == b]
-                v = (sub[campo].sum() if sello == "Total"
-                     else sub.loc[sub["label_group"] == sello, campo].sum())
-                cel = ws.cell(row=fila + k, column=j, value=float(v))
+        for j, b in enumerate(lista_bandas, start=2):
+            sub = bandas[bandas["banda"] == b]
+            valores = {sello: float(sub.loc[sub["label_group"] == sello, campo].sum())
+                       for sello in config.BMAT_LABELS}
+            colores = _semaforo(valores)
+            for k, sello in enumerate(config.BMAT_LABELS, start=1):
+                cel = ws.cell(row=fila + k, column=j, value=valores[sello])
                 cel.number_format, cel.border = formato, _BORDE
-                if sello == "Total":
-                    cel.font = _NEGRITA
+                if sello in colores:
+                    cel.fill, cel.font = colores[sello]
+            total = ws.cell(row=fila + len(config.BMAT_LABELS) + 1, column=j,
+                            value=float(sum(valores.values())))
+            total.number_format, total.border, total.font = formato, _BORDE, _NEGRITA
         fila += len(config.BMAT_LABELS) + 3
     ws.freeze_panes = "B5"
     return fila
@@ -409,60 +442,109 @@ def _hoja_top50(ws, df):
 
 def streams_catalogo(df: pd.DataFrame, corte: str = None) -> pd.DataFrame:
     """Streams de catálogo (lanzados hasta la fecha de corte) y front line
-    (después) por sello, sobre toda la fuente. Los tracks sin fecha van
-    aparte, para que los totales cuadren.
+    (después) por sello, sobre toda la fuente.
+
+    Los tracks SIN fecha de lanzamiento cuentan como catálogo: por lo
+    general son productos viejos, y así ningún stream se queda afuera del
+    reparto (antes salían en una columna aparte).
 
     Corrige un error de la plantilla: su SUMIFS tenía el rango de
     "Disqueras" relativo, y al copiarlo hacia abajo se corría una fila por
     sello -- de Virgin para abajo sumaba contra la fila equivocada (ej.
     Warner semana 35 CO: 69,9 M en la plantilla, 56,1 M bien calculado)."""
     corte = pd.Timestamp(corte or config.BMAT_CORTE_CATALOGO)
-    fecha = pd.to_datetime(df.get(config.BMAT_COL_LANZAMIENTO), errors="coerce")
-    tipo = pd.Series("Sin fecha", index=df.index)
-    tipo[fecha <= corte] = "Catalogo"
+    fecha = pd.to_datetime(df.get(config.BMAT_COL_LANZAMIENTO), errors="coerce").fillna(corte)
+    tipo = pd.Series("Catalogo", index=df.index)
     tipo[fecha > corte] = "FrontLine"
     tabla = (df.assign(_tipo=tipo).groupby(["Sello", "_tipo"])[config.BMAT_COL_STREAMS].sum()
              .unstack(fill_value=0.0).reindex(config.BMAT_LABELS, fill_value=0.0))
-    for col in ["Catalogo", "FrontLine", "Sin fecha"]:
+    for col in ["Catalogo", "FrontLine"]:
         if col not in tabla:
             tabla[col] = 0.0
-    return tabla[["Catalogo", "FrontLine", "Sin fecha"]]
+    return tabla[["Catalogo", "FrontLine"]]
+
+
+def _sin_fecha(df: pd.DataFrame) -> int:
+    fecha = pd.to_datetime(df.get(config.BMAT_COL_LANZAMIENTO), errors="coerce")
+    return int(fecha.isna().sum())
+
+
+# Columnas de la hoja de catálogo, como el archivo real: etiquetas en B,
+# los dos totales en D y F, y C/E angostas de separación.
+_CAT_COL_ETIQUETA, _CAT_COL_CATALOGO, _CAT_COL_FRONT = 2, 4, 6
+_CAT_ROJO = Font(bold=True, color="C00000")
+_CAT_MORADO = Font(bold=True, color="7030A0")
 
 
 def _hoja_catalogo(ws, df, etiqueta, top):
+    """"Streams Catalogo": catálogo vs front line por sello, con los mismos
+    bloques y el mismo aspecto del archivo que se venía usando."""
     corte = pd.Timestamp(config.BMAT_CORTE_CATALOGO)
     tabla = streams_catalogo(df)
-    _titulo(ws, f"Catálogo (lanzados hasta el {corte:%d-%m-%Y}) vs Front Line - {etiqueta}",
-            f"Sobre el Top {top:,} completo.".replace(",", "."))
-    _encabezado(ws, 4, [(f"TOP {top:,}".replace(",", "."), 32), ("Streams Catálogo", 18),
-                        ("Streams Front Line", 18), ("Sin fecha de lanzamiento", 18)])
+    sin_fecha = _sin_fecha(df)
+
+    ws.cell(row=1, column=_CAT_COL_ETIQUETA, value=f"Catalogo  >= al {corte:%d}dic{corte:%Y}").font = Font(size=9)
+    c = ws.cell(row=1, column=_CAT_COL_CATALOGO, value=corte.date())
+    c.number_format, c.font = "dd-mmm-yy", Font(size=9)
+    c = ws.cell(row=3, column=_CAT_COL_ETIQUETA, value=etiqueta)
+    c.font = Font(bold=True, size=14)
+
+    ws.column_dimensions["A"].width = 2.5
+    ws.column_dimensions["B"].width = 30
+    ws.column_dimensions["C"].width = 2.5
+    ws.column_dimensions["D"].width = 16
+    ws.column_dimensions["E"].width = 2.5
+    ws.column_dimensions["F"].width = 16
+
+    fila = 5
+    ws.row_dimensions[fila].height = 32
+    c = ws.cell(row=fila, column=_CAT_COL_ETIQUETA, value=f"TOP {top:,}".replace(",", "."))
+    c.font, c.alignment, c.border = _NEGRITA, _CENTRO, _BORDE
+    for col, texto, fuente in [(_CAT_COL_CATALOGO, "SumaStreams\nCatalogo", _CAT_ROJO),
+                               (_CAT_COL_FRONT, "SumaStreams\nFrontLine", _CAT_MORADO)]:
+        c = ws.cell(row=fila, column=col, value=texto)
+        c.font, c.alignment, c.border = fuente, _CENTRO, _BORDE
+
     orden = [s for _, sellos in _GRUPOS_CATALOGO for s in sellos]
-    for i, sello in enumerate(orden, start=5):
-        ws.cell(row=i, column=1, value=_NOMBRE_LARGO[sello]).border = _BORDE
-        for j, col in enumerate(["Catalogo", "FrontLine", "Sin fecha"], start=2):
-            c = ws.cell(row=i, column=j, value=float(tabla.loc[sello, col]))
+    fila += 1
+    for sello in orden:
+        ws.cell(row=fila, column=_CAT_COL_ETIQUETA, value=_NOMBRE_LARGO[sello]).border = _BORDE
+        for col, medida in [(_CAT_COL_CATALOGO, "Catalogo"), (_CAT_COL_FRONT, "FrontLine")]:
+            c = ws.cell(row=fila, column=col, value=float(tabla.loc[sello, medida]))
             c.number_format, c.border = "#,##0", _BORDE
-    fila = 5 + len(orden) + 1
-    _encabezado(ws, fila, [("% del total", None), ("% Catálogo", None), ("% Front Line", None)])
-    totales = {col: float(tabla[col].sum()) for col in ["Catalogo", "FrontLine"]}
+            c.alignment = Alignment(horizontal="right", vertical="center")
+        fila += 1
+
+    totales = {m: float(tabla[m].sum()) for m in ["Catalogo", "FrontLine"]}
     fila += 1
     for grupo, sellos in _GRUPOS_CATALOGO:
         filas_grupo = ([(grupo, sellos, True)] if grupo else []) + [(_NOMBRE_LARGO[s], [s], False) for s in sellos]
         for nombre, miembros, es_grupo in filas_grupo:
-            ws.cell(row=fila, column=1, value=nombre).border = _BORDE
+            c = ws.cell(row=fila, column=_CAT_COL_ETIQUETA, value=nombre)
+            c.border = _BORDE
             if es_grupo:
-                ws.cell(row=fila, column=1).font = _NEGRITA
-            for j, col in enumerate(["Catalogo", "FrontLine"], start=2):
-                v = float(tabla.loc[miembros, col].sum()) / totales[col] if totales[col] else 0.0
-                c = ws.cell(row=fila, column=j, value=v)
-                c.number_format, c.border = "0.0%", _BORDE
+                c.font = _NEGRITA
+            for col, medida in [(_CAT_COL_CATALOGO, "Catalogo"), (_CAT_COL_FRONT, "FrontLine")]:
+                v = float(tabla.loc[miembros, medida].sum()) / totales[medida] if totales[medida] else 0.0
+                c = ws.cell(row=fila, column=col, value=v)
+                c.number_format, c.border = "0.00%", _BORDE
+                c.alignment = Alignment(horizontal="right", vertical="center")
                 if es_grupo:
                     c.font = _NEGRITA
             fila += 1
-    ws.cell(row=fila, column=1, value="Total").font = _NEGRITA
-    for j in (2, 3):
-        c = ws.cell(row=fila, column=j, value=1.0 if any(totales.values()) else 0.0)
-        c.number_format, c.font = "0.0%", _NEGRITA
+
+    fila += 1
+    c = ws.cell(row=fila, column=_CAT_COL_ETIQUETA, value="Total")
+    c.font, c.border = _NEGRITA, _BORDE
+    for col in (_CAT_COL_CATALOGO, _CAT_COL_FRONT):
+        c = ws.cell(row=fila, column=col, value=1.0 if any(totales.values()) else 0.0)
+        c.number_format, c.font, c.border = "0.00%", _NEGRITA, _BORDE
+        c.alignment = Alignment(horizontal="right", vertical="center")
+
+    if sin_fecha:
+        ws.cell(row=fila + 2, column=_CAT_COL_ETIQUETA,
+                value=f"{sin_fecha} tracks sin fecha de lanzamiento: cuentan como catálogo "
+                      f"({corte:%d-%m-%Y}).").font = Font(italic=True, size=9, color="595959")
 
 
 def _hoja_base(ws, df):
