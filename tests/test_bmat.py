@@ -358,7 +358,11 @@ def test_generar_semana_completa_y_revision(tmp_path, monkeypatch):
     assert co.loc["Universal", "tracks"] == 5 and co.loc["Independientes", "tracks"] == 5
 
     inter = openpyxl.load_workbook(r.carpeta_salida / "Top 10000 BMAT COL a sem 36 de 2026.xlsx")
-    assert inter.sheetnames == ["Streams Catalogo", "Resumen", "TOP 200 Nuevos", "Tracks Independientes"]
+    assert inter.sheetnames == ["Streams Catalogo", "Resumen", "TOP 200 Nuevos",
+                                "Tracks Independientes", "Archivo Base"]
+    base = inter["Archivo Base"]
+    assert base.max_row == 251 and base["A1"].value == config.BMAT_COL_POSICION   # 250 tracks
+    assert [c.value for c in base[1]][-3:] == ["Sello", "Clasificacion", "Titularidad compartida"]
     assert inter["TOP 200 Nuevos"]["C5"].value == "Track 1"
 
     # El usuario corrige el track 1 (Universal -> Virgin) y vuelve a correr.
@@ -384,7 +388,7 @@ def test_intermedio_puede_llevar_las_hojas_opcionales(tmp_path):
     bandas = bmat_calculo.calcular_bandas(df, "CO")
     ruta = bmat_calculo.escribir_intermedio(tmp_path / "x.xlsx", "CO", 2026, 36, df, bandas,
                                             config.BMAT_HOJAS_INTERMEDIO_DISPONIBLES)
-    assert openpyxl.load_workbook(ruta).sheetnames[-2:] == ["TOP 50 - Posiciones UMG", "Archivo Base"]
+    assert openpyxl.load_workbook(ruta).sheetnames[-1] == "TOP 50 - Posiciones UMG"
 
 
 def test_por_defecto_se_generan_los_cuatro_reportes(tmp_path):

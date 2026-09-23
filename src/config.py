@@ -387,12 +387,13 @@ BMAT_REPORTES = {
 # Qué se genera de verdad cada semana: los cuatro reportes (Colombia, Perú,
 # Ecuador y Centroamérica con sus 8 mercados) y, por cada mercado, su
 # intermedio "Top N BMAT XX" con estas cuatro hojas (en este orden). Las
-# hojas "TOP 50 - Posiciones UMG" y "Archivo Base" siguen programadas y
-# probadas: para activarlas basta con agregarlas a la lista. Para apagar un
-# reporte, se saca de BMAT_REPORTES_ACTIVOS.
+# hoja "TOP 50 - Posiciones UMG" sigue programada y probada: para activarla
+# basta con agregarla a la lista. Para apagar un reporte, se saca de
+# BMAT_REPORTES_ACTIVOS.
 BMAT_REPORTES_ACTIVOS = ["COL", "PE", "EC", "CAM"]
-BMAT_HOJAS_INTERMEDIO = ["Streams Catalogo", "Resumen", "TOP 200 Nuevos", "Tracks Independientes"]
-BMAT_HOJAS_INTERMEDIO_DISPONIBLES = BMAT_HOJAS_INTERMEDIO + ["TOP 50 - Posiciones UMG", "Archivo Base"]
+BMAT_HOJAS_INTERMEDIO = ["Streams Catalogo", "Resumen", "TOP 200 Nuevos", "Tracks Independientes",
+                         "Archivo Base"]
+BMAT_HOJAS_INTERMEDIO_DISPONIBLES = BMAT_HOJAS_INTERMEDIO + ["TOP 50 - Posiciones UMG"]
 
 
 def bmat_mercados_activos() -> list:
