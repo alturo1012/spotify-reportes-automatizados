@@ -32,3 +32,4 @@ data/history/*.db
 build_pyinstaller/
 *.spec
 ReportesSpotifyLatam.exe
+.cache
