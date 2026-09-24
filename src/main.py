@@ -131,7 +131,13 @@ def main(argv=None):
         "--semana", required=True,
         help="Número de semana, solo para el nombre de los archivos de salida (ej. 25)",
     )
+    parser.add_argument(
+        "--salida",
+        help="Carpeta donde dejar los dos reportes (por defecto, data/output)",
+    )
     args = parser.parse_args(argv)
+
+    salida = Path(args.salida) if args.salida else config.OUTPUT_DIR
 
     fuente_path = Path(args.fuente)
     if not fuente_path.exists():
@@ -172,13 +178,13 @@ def main(argv=None):
                 avisos.append(aviso)
                 print(f"Aviso: {aviso}")
 
-    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    salida.mkdir(parents=True, exist_ok=True)
 
-    chart_out = config.OUTPUT_DIR / f"Reporte_Chart_Top_Semanal_Sem_{args.semana}.xlsx"
+    chart_out = salida / f"Reporte_Chart_Top_Semanal_Sem_{args.semana}.xlsx"
     chart_semanal.generar_reporte(df, chart_out, guardar_en_historico=guardar_en_historico)
     print(f"Reporte de chart semanal generado: {chart_out}")
 
-    ms_out = config.OUTPUT_DIR / f"Reporte_MS_TOP200_Sem_{args.semana}.xlsx"
+    ms_out = salida / f"Reporte_MS_TOP200_Sem_{args.semana}.xlsx"
     market_share.generar_reporte(df, ms_out, guardar_en_historico=guardar_en_historico)
     print(f"Reporte de market share generado: {ms_out}")
 

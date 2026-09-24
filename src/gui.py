@@ -25,7 +25,7 @@ if sys.stderr is None:
 
 import pandas as pd
 
-from . import bmat_calculo, bmat_proceso, chart_semanal, config, history
+from . import bmat_calculo, bmat_proceso, chart_semanal, config, history, preferencias
 from . import main as main_module
 
 
@@ -50,7 +50,7 @@ def texto_ultima_semana() -> str:
     return f"Última semana cargada: {semana} de {anio}  ({legible})"
 
 
-def generar(fuente_path: str, semana: str):
+def generar(fuente_path: str, semana: str, salida: str = None):
     """Corre el mismo proceso que `main.py` (carga la fuente, guarda la
     semana en el histórico si hace falta, genera los dos reportes) y
     devuelve las rutas de los reportes generados, para que la GUI pueda
@@ -65,13 +65,16 @@ def generar(fuente_path: str, semana: str):
     `print` y ahí no los ve nadie, así que la ventana los tiene que mostrar
     en el mensaje final.
     """
-    avisos = list(main_module.main(["--fuente", fuente_path, "--semana", semana]) or [])
+    carpeta = Path(salida) if salida else preferencias.carpeta_salida()
+    avisos = list(main_module.main(
+        ["--fuente", fuente_path, "--semana", semana, "--salida", str(carpeta)]) or [])
     aviso_fechas = chart_semanal.ultimo_aviso_fechas()
     if aviso_fechas:
         avisos.append(aviso_fechas)
 
-    chart_out = config.OUTPUT_DIR / f"Reporte_Chart_Top_Semanal_Sem_{semana}.xlsx"
-    ms_out = config.OUTPUT_DIR / f"Reporte_MS_TOP200_Sem_{semana}.xlsx"
+    preferencias.recordar_carpeta_salida(carpeta)
+    chart_out = carpeta / f"Reporte_Chart_Top_Semanal_Sem_{semana}.xlsx"
+    ms_out = carpeta / f"Reporte_MS_TOP200_Sem_{semana}.xlsx"
     return chart_out, ms_out, "\n\n".join(avisos) if avisos else None
 
 
@@ -83,10 +86,12 @@ def texto_ultima_semana_bmat() -> str:
     return f"BMAT - última semana cargada: {ultima[1]} de {ultima[0]}"
 
 
-def generar_bmat(carpeta: str, revision: str = None):
+def generar_bmat(carpeta: str, revision: str = None, salida: str = None):
     """Corre el proceso BMAT completo (ver bmat_proceso.generar_semana) y
     devuelve (resultado, texto para mostrar). Sin tkinter, para probarlo."""
-    r = bmat_proceso.generar_semana(carpeta, revision=revision or None)
+    destino = Path(salida) if salida else preferencias.carpeta_salida(preferencias.CARPETA_SALIDA_BMAT)
+    r = bmat_proceso.generar_semana(carpeta, revision=revision or None, salida=destino)
+    preferencias.recordar_carpeta_salida(destino, preferencias.CARPETA_SALIDA_BMAT)
     return r, bmat_proceso.resumen(r)
 
 
@@ -97,10 +102,12 @@ class VentanaBMAT(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
         self.title("Reportes BMAT")
-        self.geometry("620x330")
+        self.geometry("620x400")
         self.resizable(False, False)
         self.carpeta_var = tk.StringVar()
         self.revision_var = tk.StringVar()
+        self.salida_var = tk.StringVar(
+            value=str(preferencias.carpeta_salida(preferencias.CARPETA_SALIDA_BMAT)))
         self._cola: "queue.Queue" = queue.Queue()
 
         self.estado_hist = tk.StringVar(value=texto_ultima_semana_bmat())
@@ -121,7 +128,13 @@ class VentanaBMAT(tk.Toplevel):
         tk.Entry(f2, textvariable=self.revision_var, width=56).pack(side="left")
         tk.Button(f2, text="Elegir archivo...", command=self._elegir_revision).pack(side="left", padx=6)
 
-        self.boton = tk.Button(self, text="3. Generar reportes BMAT", command=self._generar,
+        tk.Label(self, text="3. Carpeta donde dejar los reportes:").pack(anchor="w", padx=14, pady=(14, 4))
+        f3 = tk.Frame(self)
+        f3.pack(fill="x", padx=14)
+        tk.Entry(f3, textvariable=self.salida_var, width=56).pack(side="left")
+        tk.Button(f3, text="Cambiar...", command=self._elegir_salida).pack(side="left", padx=6)
+
+        self.boton = tk.Button(self, text="4. Generar reportes BMAT", command=self._generar,
                                bg="#002060", fg="white", font=("Segoe UI", 11, "bold"))
         self.boton.pack(pady=20)
         self.estado = tk.StringVar()
@@ -131,6 +144,12 @@ class VentanaBMAT(tk.Toplevel):
         ruta = filedialog.askdirectory(title="Carpeta con los WK de BMAT", parent=self)
         if ruta:
             self.carpeta_var.set(ruta)
+
+    def _elegir_salida(self):
+        ruta = filedialog.askdirectory(title="Carpeta donde dejar los reportes BMAT", parent=self,
+                                       initialdir=self.salida_var.get() or None)
+        if ruta:
+            self.salida_var.set(ruta)
 
     def _elegir_revision(self):
         ruta = filedialog.askopenfilename(title="Lista para revisar corregida", parent=self,
@@ -145,13 +164,14 @@ class VentanaBMAT(tk.Toplevel):
             return
         self.boton.config(state="disabled")
         self.estado.set("Generando, un momento...")
-        threading.Thread(target=self._en_hilo, args=(carpeta, self.revision_var.get().strip()),
+        threading.Thread(target=self._en_hilo,
+                         args=(carpeta, self.revision_var.get().strip(), self.salida_var.get().strip()),
                          daemon=True).start()
         self.after(200, self._revisar)
 
-    def _en_hilo(self, carpeta, revision):
+    def _en_hilo(self, carpeta, revision, salida):
         try:
-            self._cola.put(("exito", generar_bmat(carpeta, revision)))
+            self._cola.put(("exito", generar_bmat(carpeta, revision, salida)))
         except (SystemExit, Exception) as e:  # noqa: BLE001 -- se muestra tal cual
             self._cola.put(("error", str(e)))
 
@@ -180,11 +200,12 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Reportes Spotify Latam")
-        self.geometry("560x310")
+        self.geometry("560x400")
         self.resizable(False, False)
 
         self.fuente_var = tk.StringVar()
         self.semana_var = tk.StringVar()
+        self.salida_var = tk.StringVar(value=str(preferencias.carpeta_salida()))
         # Tkinter no es seguro para llamarlo desde otro hilo (el trabajo
         # pesado corre en un hilo aparte para no congelar la ventana -- ver
         # _generar). En vez de que ese hilo llame directo a self.after(...),
@@ -218,8 +239,16 @@ class App(tk.Tk):
         )
         tk.Entry(self, textvariable=self.semana_var, width=10).pack(anchor="w", padx=14)
 
+        tk.Label(self, text="3. Carpeta donde dejar los reportes:").pack(
+            anchor="w", padx=14, pady=(18, 4)
+        )
+        frame_salida = tk.Frame(self)
+        frame_salida.pack(fill="x", padx=14)
+        tk.Entry(frame_salida, textvariable=self.salida_var, width=56).pack(side="left")
+        tk.Button(frame_salida, text="Cambiar...", command=self._elegir_salida).pack(side="left", padx=6)
+
         self.boton_generar = tk.Button(
-            self, text="3. Generar reportes", command=self._generar,
+            self, text="4. Generar reportes", command=self._generar,
             bg="#1DB954", fg="white", font=("Segoe UI", 11, "bold"),
         )
         self.boton_generar.pack(pady=22)
@@ -248,6 +277,12 @@ class App(tk.Tk):
         if ruta:
             self.fuente_var.set(ruta)
 
+    def _elegir_salida(self):
+        ruta = filedialog.askdirectory(title="Carpeta donde dejar los reportes",
+                                       initialdir=self.salida_var.get() or None)
+        if ruta:
+            self.salida_var.set(ruta)
+
     def _generar(self):
         fuente = self.fuente_var.get().strip()
         semana = self.semana_var.get().strip()
@@ -261,21 +296,22 @@ class App(tk.Tk):
         self.boton_generar.config(state="disabled")
         self.estado_var.set("Generando reportes, un momento...")
 
-        hilo = threading.Thread(target=self._generar_en_hilo, args=(fuente, semana), daemon=True)
+        hilo = threading.Thread(target=self._generar_en_hilo,
+                                args=(fuente, semana, self.salida_var.get().strip()), daemon=True)
         hilo.start()
         # Programado desde el hilo principal (el único punto donde se toca
         # Tkinter desde fuera del hilo de trabajo) -- revisa la cola cada
         # 150ms hasta que el hilo de trabajo deje un resultado.
         self.after(150, self._revisar_resultado)
 
-    def _generar_en_hilo(self, fuente: str, semana: str) -> None:
+    def _generar_en_hilo(self, fuente: str, semana: str, salida: str = None) -> None:
         # Corre en un hilo aparte para que la ventana no se quede "congelada"
         # (sin responder) mientras se procesan las ~3000 filas del archivo
         # fuente -- puede tardar varios segundos. No debe llamar a NINGÚN
         # método de Tkinter directamente (ver nota en __init__): solo deja
         # el resultado en la cola.
         try:
-            chart_out, ms_out, aviso = generar(fuente, semana)
+            chart_out, ms_out, aviso = generar(fuente, semana, salida)
         except (SystemExit, Exception) as e:  # noqa: BLE001 -- se la mostramos tal cual al usuario
             self._resultado_queue.put(("error", str(e)))
         else:

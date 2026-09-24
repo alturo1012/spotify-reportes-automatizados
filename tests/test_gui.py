@@ -14,8 +14,10 @@ from src import config, gui, history
 
 @pytest.fixture(autouse=True)
 def entorno_temporal(tmp_path, monkeypatch):
+    from src import preferencias
     monkeypatch.setattr(history, "DB_PATH", tmp_path / "test_universal_data.db")
     monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path / "output")
+    monkeypatch.setattr(preferencias, "ARCHIVO", tmp_path / "preferencias.json")
 
 
 def _fuente_minima(tmp_path, chart_date="2026-06-18"):
@@ -119,3 +121,24 @@ def test_generar_bmat_propaga_el_error_de_carpeta_sin_wk(tmp_path, monkeypatch):
     monkeypatch.setattr(bmat_clasificacion, "SEED_CLASIFICACION_CSV", tmp_path / "no2.csv.gz")
     with pytest.raises(ValueError, match="No encontré archivos WK"):
         gui.generar_bmat(str(tmp_path))
+
+
+def test_generar_usa_la_carpeta_elegida_y_la_recuerda(tmp_path):
+    from src import preferencias
+    history.seed_historico(*_seed_vacio())
+    fuente = _fuente_minima(tmp_path)
+    destino = tmp_path / "Reportes de la semana"
+
+    chart_out, ms_out, _aviso = gui.generar(str(fuente), "25", str(destino))
+
+    assert chart_out.parent == destino and chart_out.exists() and ms_out.exists()
+    assert not (config.OUTPUT_DIR / chart_out.name).exists()   # no quedó en data/output
+    # La próxima corrida arranca con esa misma carpeta, sin volver a elegirla.
+    assert preferencias.carpeta_salida() == destino
+
+
+def test_carpeta_salida_vuelve_al_default_si_la_guardada_ya_no_existe(tmp_path, monkeypatch):
+    from src import preferencias
+    monkeypatch.setattr(preferencias, "ARCHIVO", tmp_path / "preferencias.json")
+    preferencias.recordar_carpeta_salida(tmp_path / "borrada")
+    assert preferencias.carpeta_salida() == config.OUTPUT_DIR
