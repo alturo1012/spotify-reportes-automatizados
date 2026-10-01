@@ -12,7 +12,7 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 # Al empaquetar con PyInstaller en modo "--windowed" (sin consola), sys.stdout
 # / sys.stderr pueden quedar en None -- y main.py usa print() para mostrar el
@@ -25,7 +25,7 @@ if sys.stderr is None:
 
 import pandas as pd
 
-from . import bmat_calculo, bmat_proceso, chart_semanal, config, history, preferencias
+from . import bmat_calculo, bmat_proceso, chart_semanal, config, history, mensual, preferencias
 from . import main as main_module
 
 
@@ -196,6 +196,120 @@ class VentanaBMAT(tk.Toplevel):
             messagebox.showinfo("Reportes BMAT generados", texto, parent=self)
 
 
+def generar_mensual(anio, mes, salida: str = None):
+    """Genera el reporte mensual y devuelve (ruta, texto para mostrar, avisos).
+    Sin tkinter, para poder probarlo."""
+    destino = Path(salida) if salida else preferencias.carpeta_salida(
+        preferencias.CARPETA_SALIDA_MENSUAL)
+    ruta, avisos = mensual.generar(int(anio), int(mes), salida=destino)
+    preferencias.recordar_carpeta_salida(destino, preferencias.CARPETA_SALIDA_MENSUAL)
+    return ruta, mensual.resumen(ruta, avisos, int(anio), int(mes)), avisos
+
+
+def texto_ultimo_mes() -> str:
+    meses = mensual.meses_cargados()
+    if not meses:
+        return "Mensual: todavía no hay meses en el histórico."
+    anio, mes = meses[-1]
+    return f"Mensual - último mes en el histórico: {config.MESES_ES[mes].lower()} de {anio}"
+
+
+class VentanaMensual(tk.Toplevel):
+    """Ventana del reporte mensual: solo hay que elegir el mes. Los datos
+    salen de las semanas de BQ que ya se cargaron."""
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Reporte mensual - Market Share Spotify Latam")
+        self.geometry("620x330")
+        self.resizable(False, False)
+        anio, mes = mensual.ultimo_mes_cerrable()
+        self.anio_var = tk.StringVar(value=str(anio))
+        self.mes_var = tk.StringVar(value=config.MESES_ES[mes].capitalize())
+        self.salida_var = tk.StringVar(
+            value=str(preferencias.carpeta_salida(preferencias.CARPETA_SALIDA_MENSUAL)))
+        self._cola: "queue.Queue" = queue.Queue()
+
+        self.estado_hist = tk.StringVar(value=texto_ultimo_mes())
+        tk.Label(self, textvariable=self.estado_hist, fg="#1D7A3E",
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(14, 0))
+
+        tk.Label(self, text="1. Mes que quieres cerrar:").pack(anchor="w", padx=14, pady=(14, 4))
+        f1 = tk.Frame(self)
+        f1.pack(fill="x", padx=14)
+        self.combo_mes = ttk.Combobox(
+            f1, textvariable=self.mes_var, width=14, state="readonly",
+            values=[config.MESES_ES[m].capitalize() for m in range(1, 13)])
+        self.combo_mes.pack(side="left")
+        tk.Entry(f1, textvariable=self.anio_var, width=8).pack(side="left", padx=8)
+
+        tk.Label(self, text="2. Carpeta donde dejar el reporte:").pack(
+            anchor="w", padx=14, pady=(14, 4))
+        f2 = tk.Frame(self)
+        f2.pack(fill="x", padx=14)
+        tk.Entry(f2, textvariable=self.salida_var, width=56).pack(side="left")
+        tk.Button(f2, text="Cambiar...", command=self._elegir_salida).pack(side="left", padx=6)
+
+        self.boton = tk.Button(self, text="3. Generar reporte mensual", command=self._generar,
+                               bg="#002060", fg="white", font=("Segoe UI", 11, "bold"))
+        self.boton.pack(pady=18)
+        self.estado = tk.StringVar()
+        tk.Label(self, textvariable=self.estado, fg="#555", wraplength=560,
+                 justify="left").pack(padx=14)
+
+    def _elegir_salida(self):
+        ruta = filedialog.askdirectory(title="Carpeta donde dejar el reporte mensual", parent=self,
+                                       initialdir=self.salida_var.get() or None)
+        if ruta:
+            self.salida_var.set(ruta)
+
+    def _numero_de_mes(self):
+        nombre = self.mes_var.get().strip().upper()
+        for numero, texto in config.MESES_ES.items():
+            if texto == nombre:
+                return numero
+        return None
+
+    def _generar(self):
+        mes = self._numero_de_mes()
+        anio = self.anio_var.get().strip()
+        if mes is None or not anio.isdigit():
+            messagebox.showerror("Falta el mes",
+                                 "Elige el mes y escribe el año (por ejemplo 2026).", parent=self)
+            return
+        self.boton.config(state="disabled")
+        self.estado.set("Generando, un momento...")
+        threading.Thread(target=self._en_hilo,
+                         args=(anio, mes, self.salida_var.get().strip()),
+                         daemon=True).start()
+        self.after(200, self._revisar)
+
+    def _en_hilo(self, anio, mes, salida):
+        try:
+            self._cola.put(("exito", generar_mensual(anio, mes, salida)))
+        except (SystemExit, Exception) as e:  # noqa: BLE001 -- se muestra tal cual
+            self._cola.put(("error", str(e)))
+
+    def _revisar(self):
+        try:
+            tipo, dato = self._cola.get_nowait()
+        except queue.Empty:
+            self.after(200, self._revisar)
+            return
+        self.boton.config(state="normal")
+        self.estado_hist.set(texto_ultimo_mes())
+        if tipo == "error":
+            self.estado.set("Ocurrió un error, revisa el mensaje.")
+            messagebox.showerror("Error en el reporte mensual", dato, parent=self)
+            return
+        ruta, texto, avisos = dato
+        self.estado.set(f"Listo. Archivo en: {ruta}")
+        if avisos:
+            messagebox.showwarning("Reporte mensual generado (con avisos)", texto, parent=self)
+        else:
+            messagebox.showinfo("Reporte mensual generado", texto, parent=self)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -258,9 +372,13 @@ class App(tk.Tk):
             padx=14
         )
 
-        # BMAT es otro proceso (otra fuente, otros reportes): su propia ventana.
+        # BMAT y el mensual son otros procesos (otras fuentes, otros
+        # reportes): cada uno con su propia ventana.
         tk.Button(self, text="Reportes BMAT...", command=lambda: VentanaBMAT(self)).place(
             relx=1.0, rely=1.0, x=-12, y=-10, anchor="se")
+        tk.Button(self, text="Reporte mensual...",
+                  command=lambda: VentanaMensual(self)).place(
+            relx=1.0, rely=1.0, x=-140, y=-10, anchor="se")
 
     def _refrescar_historico(self) -> None:
         texto = texto_ultima_semana()

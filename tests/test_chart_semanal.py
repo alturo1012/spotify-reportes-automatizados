@@ -806,3 +806,90 @@ def test_columnas_fijas_con_los_anchos_y_colores_del_oficial(tmp_path):
     semana = ws.cell(row=7, column=3)
     assert str(semana.fill.start_color.rgb)[-6:] == chart_semanal.COLOR_COLUMNA_SEMANA
     assert ws.cell(row=7, column=1).font.sz == chart_semanal.TAMANO_FUENTE_ANIO
+
+
+# --------------------------------------------------------------------------
+# Orden del listado de canciones (pedido del área, correo del 01/10/2026):
+# "por TOP de mayor número de tracks a menor, comenzando por el top 10,
+# luego top 30, y así sucesivamente".
+# --------------------------------------------------------------------------
+
+def _semana_de_prueba(filas):
+    """`filas` = [(cancion, pais, posicion), ...]"""
+    return pd.DataFrame({
+        "country_code": [p for _, p, _ in filas],
+        "chart_date": pd.to_datetime(["2026-09-24"] * len(filas)),
+        "position": [pos for _, _, pos in filas],
+        "artist": ["artista"] * len(filas),
+        "song_name": [c for c, _, _ in filas],
+        "stream_count": [1_000_000] * len(filas),
+        "label_group": ["Universal"] * len(filas),
+        "label_name": ["UMG"] * len(filas),
+        "region": ["Latin"] * len(filas),
+    })
+
+
+def test_el_listado_cuenta_los_paises_de_cada_banda_y_son_excluyentes(tmp_path):
+    # Una canción en el Top 10 de dos países, en el Top 30 de uno y en el
+    # Top 200 de otro: cada país suma a UNA sola banda.
+    df = _semana_de_prueba([
+        ("cancion", "CO", 1), ("cancion", "PE", 5),
+        ("cancion", "EC", 25), ("cancion", "MX", 150),
+    ])
+
+    listado = chart_semanal.construir_listado_canciones(df)
+
+    fila = listado.iloc[0]
+    assert fila["cuenta_10"] == 2
+    assert fila["cuenta_30"] == 1
+    assert fila["cuenta_50"] == 0
+    assert fila["cuenta_100"] == 0
+    assert fila["cuenta_200"] == 1
+    # Las cinco cuentas suman la cantidad de países donde aparece.
+    assert sum(fila[f"cuenta_{b}"] for b in config.BANDAS_CHART) == fila["paises_presente"]
+
+
+def test_manda_el_top_10_aunque_la_otra_cancion_este_en_mas_paises(tmp_path):
+    """El caso que reportó el área: una canción en el Top 10 de tres países
+    va ARRIBA de otra que está en diez países pero ninguno en el Top 10."""
+    df = _semana_de_prueba(
+        [("top10", p, 3) for p in ["CO", "PE", "EC"]]
+        + [("muchos_paises", p, 150) for p in
+           ["CO", "PE", "EC", "MX", "AR", "CL", "BR", "GT", "HN", "NI"]]
+    )
+
+    listado = chart_semanal.construir_listado_canciones(df)
+
+    assert list(listado["cancion"].str.split(" / ").str[0]) == ["top10", "muchos_paises"]
+    # Y con el criterio viejo (más países primero) habría salido al revés.
+    assert listado.iloc[0]["paises_presente"] < listado.iloc[1]["paises_presente"]
+
+
+def test_empatados_en_top_10_desempata_el_top_30_y_despues_el_50(tmp_path):
+    df = _semana_de_prueba([
+        ("a", "CO", 1), ("a", "PE", 25), ("a", "EC", 26),
+        ("b", "CO", 2), ("b", "PE", 26), ("b", "EC", 45),
+        ("c", "CO", 3), ("c", "PE", 40), ("c", "EC", 45),
+    ])
+
+    listado = chart_semanal.construir_listado_canciones(df)
+
+    # Las tres tienen cuenta_10 = 1. "a" tiene dos en el Top 30, "b" una,
+    # "c" ninguna; entre "b" y "c" desempata el Top 50.
+    assert list(listado["cancion"].str.split(" / ").str[0]) == ["a", "b", "c"]
+
+
+def test_el_ultimo_desempate_es_la_fecha_de_lanzamiento_mas_antigua(tmp_path):
+    listado = pd.DataFrame({
+        "cancion": ["nueva", "vieja", "sin_fecha"],
+        "cuenta_10": [1, 1, 1], "cuenta_30": [0, 0, 0], "cuenta_50": [0, 0, 0],
+        "cuenta_100": [0, 0, 0], "cuenta_200": [0, 0, 0],
+        "fecha_lanzamiento": ["2026-01-01", "2019-05-20", None],
+    })
+
+    ordenado = chart_semanal.ordenar_listado(listado)
+
+    # La más antigua primero y la que no tiene fecha al final (una fecha que
+    # no se pudo resolver no debe adelantar a la canción).
+    assert list(ordenado["cancion"]) == ["vieja", "nueva", "sin_fecha"]
+    assert "_fecha_orden" not in ordenado.columns

@@ -454,3 +454,57 @@ MS_SHEET_PORCENTAJE = "% Market Share"
 # openpyxl -- se usó un azul marino estándar equivalente).
 COLOR_BANNER_MS_FONDO = "1F3864"
 COLOR_BANNER_MS_TEXTO = "FFFFFF"
+
+
+# ---------------------------------------------------------------------------
+# Reporte MENSUAL "Market Share Spotify Latam"
+# ---------------------------------------------------------------------------
+# Es el hermano mensual del Reporte_MS_TOP200: mismo % de streams por sello,
+# pero con los meses como columnas y con una banda más (Top 20). Ver
+# src/mensual.py (cómo se arma un mes) y src/mensual_reporte.py (el Excel).
+
+MENSUAL_BANDAS = [10, 20, 50, 100, 200]
+# El "Resumen" solo muestra cuatro de las cinco (no lleva el Top 20).
+MENSUAL_BANDAS_RESUMEN = [10, 50, 100, 200]
+
+# Los 17 países, en el orden en que van las hojas y las columnas del
+# Resumen, con el nombre que lleva cada encabezado.
+MENSUAL_PAISES = [
+    ("CO", "COLOMBIA"), ("PE", "PERU"), ("EC", "ECUADOR"), ("CR", "COSTA RICA"),
+    ("GT", "GUATEMALA"), ("PN", "PANAMA"), ("HN", "HONDURAS"), ("NI", "NICARAGUA"),
+    ("SV", "EL SALVADOR"), ("DO", "REP. DOMINICANA"), ("VE", "VENEZUELA"),
+    ("AR", "ARGENTINA"), ("CL", "CHILE"), ("BR", "BRASIL"), ("MX", "MEXICO"),
+    ("SP", "ESPAÑA"), ("PT", "PORTUGAL"),
+]
+
+# El nombre de la hoja de país no siempre es la sigla: Chile es "CH" en el
+# archivo real aunque su código de país sea CL.
+MENSUAL_HOJAS_PAIS = {sigla: ("CH" if sigla == "CL" else sigla)
+                      for sigla, _ in MENSUAL_PAISES}
+MENSUAL_HOJA_DET = "{sigla}-Det"
+
+# Cómo se llama cada sello en cada bloque de las hojas Det (el archivo real
+# escribe el mismo sello distinto en el bloque de tracks, el de streams y el
+# de %).
+MENSUAL_NOMBRES_DET = {
+    "tracks": {"Universal": "Universal", "INgrooves": "INgrooves", "Virgin": "Virgin",
+               "Sony": "Sony", "Orchard": "Orchard", "Warner": "Warner", "Indies": "Indies"},
+    "streams": {"Universal": "Universal", "INgrooves": "INgrooves", "Virgin": "Virgin",
+                "Sony": "Sony", "Orchard": "Orchard", "Warner": "Warner", "Indies": "Indies"},
+    "pct": {"Universal": "Universal Music", "INgrooves": "INgrooves", "Virgin": "Virgin",
+            "Sony": "Sony", "Orchard": "The Orchard", "Warner": "Warner",
+            "Indies": "Independientes"},
+}
+
+# En las hojas de país los sellos van en otro orden (Universal, Sony, y
+# después los demás), igual que en el reporte semanal.
+MENSUAL_ORDEN_PAIS = ["Universal", "Sony", "INgrooves", "Virgin", "Orchard", "Warner", "Indies"]
+MENSUAL_NOMBRES_PAIS = {
+    "Universal": "Universal Music", "Sony": "Sony", "INgrooves": "INgrooves",
+    "Virgin": "Virgin", "Orchard": "The Orchard", "Warner": "Warner",
+    "Indies": "Independientes",
+}
+
+# El histórico arranca en mayo de 2017, que es donde empieza la plantilla.
+MENSUAL_INICIO = (2017, 5)
+MENSUAL_ARCHIVO = "Market Share Spotify Latam a {mes} de {anio}.xlsx"

@@ -142,3 +142,54 @@ def test_carpeta_salida_vuelve_al_default_si_la_guardada_ya_no_existe(tmp_path, 
     monkeypatch.setattr(preferencias, "ARCHIVO", tmp_path / "preferencias.json")
     preferencias.recordar_carpeta_salida(tmp_path / "borrada")
     assert preferencias.carpeta_salida() == config.OUTPUT_DIR
+
+
+def _semanas_de_septiembre():
+    """Las cuatro semanas de septiembre de 2026 en `ms_band_label_weekly`,
+    escritas directo en la base (es lo que el reporte mensual necesita)."""
+    filas = []
+    for i, fecha in enumerate(["2026-09-03", "2026-09-10", "2026-09-17", "2026-09-24"]):
+        for banda in config.MENSUAL_BANDAS:
+            for sello in config.LABEL_GROUPS_MS:
+                filas.append((2026, 36 + i, fecha, "CO", banda, sello,
+                              1 / len(config.LABEL_GROUPS_MS), 2.0, 5.0))
+    conn = history.conectar()
+    conn.executemany(
+        "INSERT OR REPLACE INTO ms_band_label_weekly (anio, semana, chart_date, country_code, "
+        "banda, label_group, pct_streams, tracks, streams_millones) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", filas)
+    conn.commit()
+    conn.close()
+
+
+def test_generar_mensual_escribe_el_reporte_del_mes(tmp_path):
+    _semanas_de_septiembre()
+
+    ruta, texto, avisos = gui.generar_mensual(2026, 9, str(tmp_path / "mensual"))
+
+    assert ruta.exists()
+    assert ruta.name == "Market Share Spotify Latam a sep de 2026.xlsx"
+    assert avisos == []
+    assert "septiembre de 2026" in texto
+
+
+def test_generar_mensual_recuerda_la_carpeta_elegida(tmp_path):
+    from src import preferencias
+    _semanas_de_septiembre()
+    destino = tmp_path / "mi carpeta"
+
+    gui.generar_mensual(2026, 9, str(destino))
+
+    assert preferencias.carpeta_salida(preferencias.CARPETA_SALIDA_MENSUAL) == destino
+
+
+def test_generar_mensual_avisa_si_al_mes_le_falta_una_semana(tmp_path):
+    _semanas_de_septiembre()
+    conn = history.conectar()
+    conn.execute("DELETE FROM ms_band_label_weekly WHERE chart_date = '2026-09-17'")
+    conn.commit()
+    conn.close()
+
+    _ruta, _texto, avisos = gui.generar_mensual(2026, 9, str(tmp_path / "mensual"))
+
+    assert any("falta" in a for a in avisos)

@@ -264,6 +264,43 @@ def _pintar_posicion(celda, banda: int) -> None:
     celda.font = Font(color=texto)
 
 
+def ordenar_listado(listado: pd.DataFrame) -> pd.DataFrame:
+    """El orden de las filas del listado de canciones, tal como lo pidió el
+    área (correo del 01/10/2026):
+
+        "El orden es por TOP de mayor número de tracks a menor, comenzando
+         por el top 10, luego top 30, y así sucesivamente."
+
+    O sea: primero las canciones que están en el Top 10 de más países; entre
+    las que empatan ahí, las que están en el Top 30 de más países; y así con
+    50, 100 y 200. El último desempate es la fecha de lanzamiento, de la más
+    antigua a la más reciente.
+
+    ANTES se ordenaba por cantidad de países y suma de posiciones. Eso dejaba
+    arriba canciones que están en muchos países pero en posiciones bajas, por
+    encima de otras que están en el Top 10 de varios -- que es justo lo que
+    el área reportó al revisar la semana 39.
+
+    Las canciones sin fecha de lanzamiento quedan al final de su grupo, no
+    primero: una fecha que no se pudo resolver no debería adelantar a la
+    canción.
+    """
+    claves = [f"cuenta_{banda}" for banda in config.BANDAS_CHART if f"cuenta_{banda}" in listado]
+    if not claves:
+        return listado.reset_index(drop=True)
+    ascendente = [False] * len(claves)
+    if "fecha_lanzamiento" in listado.columns:
+        claves.append("_fecha_orden")
+        ascendente.append(True)
+        listado = listado.copy()
+        listado["_fecha_orden"] = pd.to_datetime(listado["fecha_lanzamiento"], errors="coerce")
+
+    ordenado = listado.sort_values(
+        claves, ascending=ascendente, na_position="last", kind="mergesort"
+    ).reset_index(drop=True)
+    return ordenado.drop(columns="_fecha_orden", errors="ignore")
+
+
 def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
     """Listado de canciones de la semana que se acaba de cargar (NO es
     histórico -- cambia por completo cada vez que se sube una fuente nueva,
@@ -281,12 +318,12 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
       para resolver "fecha_lanzamiento" (ver agregar_fecha_lanzamiento).
     - "paises_presente": en cuántos países aparece.
     - "suma_posiciones": suma de sus posiciones en todos esos países.
+    - "cuenta_10", "cuenta_30", "cuenta_50", "cuenta_100", "cuenta_200": en
+      cuántos países la canción cae en esa banda. Son EXCLUYENTES (cada país
+      suma a una sola, la de su posición), así que las cinco suman
+      "paises_presente". Uso interno: son las claves de orden.
 
-    Orden de filas: por cantidad de países (de mayor a menor) y, para
-    empatar, por la suma de posiciones (de menor a mayor) -- así las
-    canciones que están en más países y mejor posicionadas quedan primero
-    ("las mejores canciones"). Es una decisión razonable, no algo pedido
-    explícito -- fácil de cambiar si no es el orden que se espera.
+    Orden de filas: ver `ordenar_listado`.
 
     Solo devuelve las primeras config.TOP_N_LISTADO_CANCIONES (200 por
     defecto) de ese orden -- pedido explícito del usuario, para no listar
@@ -347,10 +384,16 @@ def construir_listado_canciones(df_semana: pd.DataFrame) -> pd.DataFrame:
         f"{pais}_top{banda}" for pais, banda in posiciones_por_pais.columns
     ]
 
-    listado = resumen_cancion.join(posiciones_por_pais).reset_index()
-    listado = listado.sort_values(
-        ["paises_presente", "suma_posiciones"], ascending=[False, True]
-    ).reset_index(drop=True)
+    # Cuántos países ponen a la canción en cada banda. Son las claves de
+    # orden que pidió el área (ver `ordenar_listado`).
+    cuentas = df.pivot_table(
+        index="cancion", columns="banda", values="country_code", aggfunc="nunique"
+    )
+    cuentas = cuentas.reindex(columns=config.BANDAS_CHART, fill_value=0).fillna(0)
+    cuentas.columns = [f"cuenta_{banda}" for banda in config.BANDAS_CHART]
+
+    listado = resumen_cancion.join(cuentas).join(posiciones_por_pais).reset_index()
+    listado = ordenar_listado(listado)
     # Tope opcional (ver config.TOP_N_LISTADO_CANCIONES). Hoy está en None:
     # el listado trae solo productos Universal y son pocos, así que se
     # muestran todos para que cuadre con la serie histórica de arriba.
@@ -606,6 +649,9 @@ def _escribir_listado_canciones(
     if listado.empty:
         return
     listado = agregar_fecha_lanzamiento(listado, cliente=cliente_spotify)
+    # Se reordena DESPUÉS de resolver las fechas: la fecha de lanzamiento es
+    # el último criterio de desempate y antes de este punto no se conoce.
+    listado = ordenar_listado(listado)
 
     negrita = Font(bold=True)
     centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)

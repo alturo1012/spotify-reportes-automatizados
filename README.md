@@ -61,7 +61,8 @@ python -m scripts.sembrar_historico   # siembra el histórico real (2019-2026)
 python -m src.main --semana 25 --fuente data/raw/Fuente_de_datos_BQ_Spotify.xlsx
 ```
 
-3. Los reportes se generan en `data/output/`. Si la fecha de esa semana ya
+3. Los reportes se generan en `data/output/`, o en la carpeta que se pase
+   con `--salida "D:/Reportes/Semana 38"`. Si la fecha de esa semana ya
    estaba en el histórico (por ejemplo si se corre dos veces por error con
    el mismo archivo), no se duplica: solo se regeneran los reportes.
 
@@ -74,12 +75,46 @@ Para alguien que no vaya a usar la terminal ni git cada semana:
    `build.bat` desde una terminal en la raíz del repo). Al terminar, queda
    `ReportesSpotifyLatam.exe` en la raíz del repo.
 2. Cada semana: doble clic en `ReportesSpotifyLatam.exe` → elige el archivo
-   fuente de la semana → escribe el número de semana → clic en "Generar
-   reportes". Al terminar, muestra en qué carpeta quedaron los dos reportes.
+   fuente de la semana → escribe el número de semana → elige la carpeta donde
+   dejar los reportes (la primera vez es `data/output`; después queda la
+   última que hayas usado) → clic en "Generar reportes". Al terminar, muestra en qué carpeta quedaron los dos reportes.
 
 **Importante:** no muevas `ReportesSpotifyLatam.exe` fuera de esta carpeta —
 necesita quedarse junto a `data/` para leer y guardar el histórico. Si lo
 mueves, copia también la carpeta `data/` junto a él.
+
+## Uso mensual — reporte "Market Share Spotify Latam"
+
+Al cerrar el mes, un reporte más: el mismo % de market share pero con los
+meses como columnas (y una banda extra, el Top 20). **No hace falta cargar
+nada nuevo**: el mes se arma con las semanas de BQ que ya se cargaron.
+
+- Sin terminal: en la ventana, botón **"Reporte mensual..."** → elige el mes
+  y el año → elige la carpeta → "Generar reporte mensual".
+- Con terminal:
+
+```bash
+python -m scripts.generar_mensual --anio 2026 --mes 9
+python -m scripts.generar_mensual --anio 2026 --mes 9 --salida "D:/Reportes"
+```
+
+Si al mes le falta alguna semana, el programa lo dice y genera el archivo
+igual, pero **no guarda ese mes en el histórico** hasta que esté completo
+(así un mes corto no se arrastra en silencio al trimestre y al año).
+
+Las semanas del histórico sembrado (hasta la 33 de 2026) traen solo el % y no
+se pueden sumar. Cuando aparezca la fuente de BQ de una de ellas:
+
+```bash
+python -m scripts.completar_semanas "C:/ruta/BQ_semana_32.xlsx"
+```
+
+`recargar_semanas.py` NO sirve para eso: salta a propósito las fechas que ya
+vienen sembradas, para no numerar la misma semana dos veces.
+
+La historia de mayo de 2017 a julio de 2026 viene sembrada desde la
+plantilla; ver `claude/mensual_market_share_analisis.md` para las reglas de
+cálculo y cómo se validaron.
 
 ## Tests
 
@@ -93,4 +128,5 @@ pytest tests/ -v
 - [x] Histórico acumulado (`history.py`), sembrado con datos reales (2019-2026 Chart, 2025-2026 Market Share)
 - [x] Validar reportes generados contra los reportes manuales existentes (323 valores reales comparados, 0 diferencias)
 - [x] Ejecución sin terminal (GUI de escritorio, empaquetada con PyInstaller)
+- [x] Reporte mensual de Market Share (`src/mensual.py`), validado contra la plantilla (272.504 celdas, 0 diferencias fuera del mes nuevo)
 - [ ] Espacio de pruebas para el código de fechas de lanzamiento vía API de Spotify (`experiments/spotify_api/`)

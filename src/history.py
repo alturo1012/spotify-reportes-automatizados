@@ -50,6 +50,18 @@ SEED_MS_BANDAS_CSV = SEED_DIR / "seed_ms_band_label_weekly.csv"
 # BMAT de los 11 mercados, hasta la semana 35 de 2026 (comprimido: son
 # ~133.000 filas). pandas lo lee igual que un CSV normal.
 SEED_BMAT_CSV = SEED_DIR / "seed_bmat_weekly.csv.gz"
+# Histórico MENSUAL (tracks / streams / % por país, banda y sello), extraído
+# de las hojas "XX-Det" de PLANTILLA MES Market Share Spotify 2026.xlsx:
+# desde mayo de 2017 hasta el último mes que traía la plantilla. Es lo que
+# alimenta el reporte mensual, igual que los otros seeds alimentan los
+# semanales.
+SEED_MS_MENSUAL_CSV = SEED_DIR / "seed_ms_mensual.csv.gz"
+# Las columnas de CIERRE (Q1..Q4, H1 y el año) de esas mismas hojas Det. Se
+# guardan aparte, tal cual las traía la plantilla, porque en 2017 y 2018 no
+# cuadran con la suma/promedio de sus meses: son fórmulas viejas hechas a
+# mano (por ejemplo, el Q1 de 2018 se olvidó de enero). De 2019 en adelante
+# sí cuadran -- se comprobó celda por celda. Ver mensual_reporte.Valores.
+SEED_MS_MENSUAL_CIERRE_CSV = SEED_DIR / "seed_ms_mensual_cierre.csv.gz"
 
 
 def conectar() -> sqlite3.Connection:
@@ -134,11 +146,63 @@ def _conectar() -> sqlite3.Connection:
             banda INTEGER NOT NULL,
             label_group TEXT NOT NULL,
             pct_streams REAL NOT NULL,
+            tracks REAL,
+            streams_millones REAL,
             PRIMARY KEY (anio, semana, country_code, banda, label_group)
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ms_mensual (
+            anio INTEGER NOT NULL,
+            mes INTEGER NOT NULL,
+            country_code TEXT NOT NULL,
+            banda INTEGER NOT NULL,
+            label_group TEXT NOT NULL,
+            tracks REAL,
+            streams_millones REAL,
+            pct_streams REAL,
+            semanas INTEGER,
+            origen TEXT,
+            PRIMARY KEY (anio, mes, country_code, banda, label_group)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ms_mensual_cierre (
+            anio INTEGER NOT NULL,
+            periodo TEXT NOT NULL,
+            country_code TEXT NOT NULL,
+            banda INTEGER NOT NULL,
+            label_group TEXT NOT NULL,
+            tracks REAL,
+            streams_millones REAL,
+            pct_streams REAL,
+            PRIMARY KEY (anio, periodo, country_code, banda, label_group)
+        )
+        """
+    )
+    # Bases creadas antes del reporte mensual no tienen las dos columnas
+    # nuevas de ms_band_label_weekly: se agregan sin tocar los datos.
+    _asegurar_columnas(conn, "ms_band_label_weekly", {"tracks": "REAL", "streams_millones": "REAL"})
     return conn
+
+
+def _asegurar_columnas(conn: sqlite3.Connection, tabla: str, columnas: dict) -> None:
+    """Agrega con ALTER TABLE las columnas que le falten a una tabla que ya
+    existía. SQLite no tiene "ADD COLUMN IF NOT EXISTS", así que primero se
+    mira qué columnas hay.
+
+    Sirve para que una base vieja (la del usuario, con todo su histórico) se
+    ponga al día sola al abrirla, sin tener que borrarla y volver a sembrar.
+    """
+    existentes = {fila[1] for fila in conn.execute(f"PRAGMA table_info({tabla})")}
+    for nombre, tipo in columnas.items():
+        if nombre not in existentes:
+            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}")
+    conn.commit()
 
 
 # Las cuatro tablas de histórico de Spotify, en el orden en que se siembran.
@@ -163,6 +227,7 @@ def seed_historico(
     ms_csv: Path = None,
     ms_bandas_csv: Path = None,
     bmat_csv: Path = None,
+    mensual_csv: Path = None,
 ) -> None:
     """Carga UNA VEZ el histórico ya extraído de los reportes/plantillas
     reales. Es seguro correrlo más de una vez: usa INSERT OR IGNORE, así que
@@ -186,9 +251,11 @@ def seed_historico(
 
     Es seguro correrlo más de una vez: usa INSERT OR IGNORE.
     """
-    if chart_csv is None and ms_csv is None and ms_bandas_csv is None and bmat_csv is None:
+    if (chart_csv is None and ms_csv is None and ms_bandas_csv is None
+            and bmat_csv is None and mensual_csv is None):
         chart_csv, ms_csv = SEED_CHART_CSV, SEED_MS_CSV
         ms_bandas_csv, bmat_csv = SEED_MS_BANDAS_CSV, SEED_BMAT_CSV
+        mensual_csv = SEED_MS_MENSUAL_CSV
 
     chart_df = pd.read_csv(chart_csv) if chart_csv is not None else None
     ms_df = pd.read_csv(ms_csv) if ms_csv is not None else None
@@ -235,6 +302,32 @@ def seed_historico(
                     ["anio", "semana", "chart_date", "country_code", "banda", "label_group", "pct_streams"]
                 ].itertuples(index=False, name=None),
             )
+        if mensual_csv is not None:
+            mensual_df = pd.read_csv(mensual_csv)
+            columnas = ["anio", "mes", "country_code", "banda", "label_group",
+                        "tracks", "streams_millones", "pct_streams"]
+            conn.executemany(
+                """INSERT OR IGNORE INTO ms_mensual
+                   (anio, mes, country_code, banda, label_group,
+                    tracks, streams_millones, pct_streams, semanas, origen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'plantilla')""",
+                mensual_df[columnas].astype(object).where(
+                    pd.notna(mensual_df[columnas]), None
+                ).itertuples(index=False, name=None),
+            )
+            if SEED_MS_MENSUAL_CIERRE_CSV.exists():
+                cierre_df = pd.read_csv(SEED_MS_MENSUAL_CIERRE_CSV)
+                cols_cierre = ["anio", "periodo", "country_code", "banda", "label_group",
+                               "tracks", "streams_millones", "pct_streams"]
+                conn.executemany(
+                    """INSERT OR IGNORE INTO ms_mensual_cierre
+                       (anio, periodo, country_code, banda, label_group,
+                        tracks, streams_millones, pct_streams)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    cierre_df[cols_cierre].astype(object).where(
+                        pd.notna(cierre_df[cols_cierre]), None
+                    ).itertuples(index=False, name=None),
+                )
         conn.commit()
     finally:
         conn.close()
@@ -333,6 +426,92 @@ def append_semana_ms(df_semana: pd.DataFrame) -> None:
         conn.close()
 
 
+def _filas_ms_bandas(df_semana: pd.DataFrame, anio: int, semana: int, fecha_str: str) -> list:
+    """Las filas de `ms_band_label_weekly` de una semana: % , tracks y
+    streams por país, banda y sello.
+
+    Va aparte porque la usan dos caminos distintos: `append_semana_ms_bandas`
+    (semana nueva, número al final) y `completar_semana_ms_bandas` (semana
+    que YA está en el histórico y solo hay que rellenarle los números que le
+    faltan, conservando su número).
+    """
+    df = df_semana.copy()
+    if "stream_count" not in df.columns:
+        df["stream_count"] = 0.0
+    df["stream_count"] = df["stream_count"].fillna(0.0)
+    # Los streams se reparten entre los sellos (cada uno se queda con su
+    # participación), pero los TRACKS se cuentan una sola vez, para el dueño
+    # del producto: son dos vistas distintas de la misma semana.
+    df_tracks = load_data.tracks_unicos(df)
+
+    filas = []
+    for country_code, grupo_pais in df.groupby("country_code"):
+        tracks_pais = df_tracks[df_tracks["country_code"] == country_code]
+        for banda in config.BANDAS_MARKET_SHARE:
+            grupo_banda = grupo_pais[grupo_pais["position"] <= banda]
+            total = grupo_banda["stream_count"].sum()
+            streams_por_label = grupo_banda.groupby("label_group")["stream_count"].sum()
+            tracks_por_label = (
+                tracks_pais[tracks_pais["position"] <= banda].groupby("label_group").size()
+            )
+            for label in config.LABEL_GROUPS_MS:
+                streams_label = float(streams_por_label.get(label, 0.0))
+                pct = streams_label / total if total else 0.0
+                filas.append((
+                    anio, semana, fecha_str, country_code, banda, label, pct,
+                    float(tracks_por_label.get(label, 0)),
+                    streams_label / FACTOR_ESCALA_STREAMS,
+                ))
+    return filas
+
+
+def completar_semana_ms_bandas(df_semana: pd.DataFrame) -> tuple:
+    """Rellena los tracks y los streams de una semana que YA está en el
+    histórico, conservando el número de semana que tiene.
+
+    PARA QUÉ SIRVE
+    --------------
+    El histórico sembrado (2021 -> semana 33 de 2026) se sacó de los reportes
+    reales, que solo traían el %: esas semanas no tienen tracks ni streams, y
+    sin ellos no se puede cerrar el mes al que pertenecen. Cuando aparece la
+    fuente de BQ de una de esas semanas -- pasó con agosto de 2026, que
+    necesitaba las semanas 32 y 33 -- hay que meterle esos números SIN
+    cambiarle el número de semana.
+
+    `recargar_semanas.py` no sirve para esto: salta a propósito los archivos
+    cuya fecha ya viene en la siembra, justamente para no numerarlos dos
+    veces.
+
+    Devuelve `(anio, semana, cuántas filas se recalcularon)`, o None si esa
+    fecha no está en el histórico (ahí lo que corresponde es cargarla como
+    semana nueva, con el flujo normal).
+    """
+    fecha = _validar_una_sola_semana(df_semana)
+    fecha_str = fecha.date().isoformat()
+
+    conn = _conectar()
+    try:
+        fila = conn.execute(
+            "SELECT anio, semana FROM ms_band_label_weekly WHERE chart_date = ? LIMIT 1",
+            (fecha_str,),
+        ).fetchone()
+        if fila is None:
+            return None
+        anio, semana = int(fila[0]), int(fila[1])
+        filas = _filas_ms_bandas(df_semana, anio, semana, fecha_str)
+        conn.executemany(
+            """INSERT OR REPLACE INTO ms_band_label_weekly
+               (anio, semana, chart_date, country_code, banda, label_group,
+                pct_streams, tracks, streams_millones)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            filas,
+        )
+        conn.commit()
+        return anio, semana, len(filas)
+    finally:
+        conn.close()
+
+
 def append_semana_ms_bandas(df_semana: pd.DataFrame) -> None:
     """Calcula, para la semana que trae `df_semana`, el % de streams de cada
     sello dentro de cada banda (config.BANDAS_MARKET_SHARE) de cada país, y
@@ -344,34 +523,32 @@ def append_semana_ms_bandas(df_semana: pd.DataFrame) -> None:
     desde `chart_track_weekly`. Se pasó a tabla propia para poder sembrar de
     una vez los años de historia que ya traía el reporte real (2021 en
     adelante), que track por track no se podían reconstruir.
+
+    Además del %, guarda los dos números con que ese % se calcula:
+
+    - `streams_millones`: los streams del sello en la banda, en millones
+      (misma escala que el resto del histórico, ver FACTOR_ESCALA_STREAMS);
+    - `tracks`: cuántos tracks de la banda son de ese sello, contando
+      TRACKS y no filas, y asignando cada track a su sello dueño (ver
+      `load_data.tracks_unicos`) -- exactamente el mismo criterio con que
+      `append_semana_chart` cuenta los de Universal.
+
+    Los necesita el reporte MENSUAL, que suma los streams de las semanas del
+    mes y promedia los tracks (ver `mensual.py`). El % semanal no cambió.
     """
     fecha = _validar_una_sola_semana(df_semana)
     anio = fecha.year
-    fecha_str = fecha.date().isoformat()
-
-    df = df_semana.copy()
-    if "stream_count" not in df.columns:
-        df["stream_count"] = 0.0
-    df["stream_count"] = df["stream_count"].fillna(0.0)
 
     conn = _conectar()
     try:
         semana = _proxima_semana(conn, "ms_band_label_weekly", anio)
-        filas = []
-        for country_code, grupo_pais in df.groupby("country_code"):
-            for banda in config.BANDAS_MARKET_SHARE:
-                grupo_banda = grupo_pais[grupo_pais["position"] <= banda]
-                total = grupo_banda["stream_count"].sum()
-                streams_por_label = grupo_banda.groupby("label_group")["stream_count"].sum()
-                for label in config.LABEL_GROUPS_MS:
-                    streams_label = float(streams_por_label.get(label, 0.0))
-                    pct = streams_label / total if total else 0.0
-                    filas.append((anio, semana, fecha_str, country_code, banda, label, pct))
+        filas = _filas_ms_bandas(df_semana, anio, semana, fecha.date().isoformat())
 
         conn.executemany(
             """INSERT OR REPLACE INTO ms_band_label_weekly
-               (anio, semana, chart_date, country_code, banda, label_group, pct_streams)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (anio, semana, chart_date, country_code, banda, label_group,
+                pct_streams, tracks, streams_millones)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             filas,
         )
         conn.commit()
@@ -399,6 +576,60 @@ def cargar_ms_band_label_weekly() -> pd.DataFrame:
         )
     finally:
         conn.close()
+
+
+def cargar_ms_mensual() -> pd.DataFrame:
+    """El histórico MENSUAL completo (lo sembrado de la plantilla más los
+    meses que haya cerrado el programa)."""
+    conn = _conectar()
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM ms_mensual "
+            "ORDER BY country_code, anio, mes, banda, label_group",
+            conn,
+        )
+    finally:
+        conn.close()
+
+
+def cargar_ms_mensual_cierre() -> pd.DataFrame:
+    """Los cierres (Q1..Q4, H1, año) tal cual venían en la plantilla."""
+    conn = _conectar()
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM ms_mensual_cierre "
+            "ORDER BY country_code, anio, periodo, banda, label_group",
+            conn,
+        )
+    finally:
+        conn.close()
+
+
+def guardar_mes(filas) -> int:
+    """Guarda (o reemplaza) las filas de un mes en `ms_mensual`.
+
+    Cada fila: (anio, mes, country_code, banda, label_group, tracks,
+    streams_millones, pct_streams, semanas, origen).
+
+    Reemplaza a propósito: volver a cerrar un mes al que le llegó una semana
+    que faltaba tiene que dejar el mes recalculado, no duplicado. Lo que
+    viene de la plantilla (origen 'plantilla') se pisa igual: si el programa
+    puede recalcular ese mes desde sus semanas, su número manda.
+    """
+    filas = list(filas)
+    conn = _conectar()
+    try:
+        conn.executemany(
+            """INSERT OR REPLACE INTO ms_mensual
+               (anio, mes, country_code, banda, label_group,
+                tracks, streams_millones, pct_streams, semanas, origen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            filas,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(filas)
 
 
 def ultima_fecha_cargada():

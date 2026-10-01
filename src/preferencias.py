@@ -17,6 +17,7 @@ ARCHIVO = config.ROOT_DIR / "data" / "preferencias.json"
 
 CARPETA_SALIDA = "carpeta_salida"
 CARPETA_SALIDA_BMAT = "carpeta_salida_bmat"
+CARPETA_SALIDA_MENSUAL = "carpeta_salida_mensual"
 
 
 def cargar() -> dict:
