@@ -893,3 +893,25 @@ def test_el_ultimo_desempate_es_la_fecha_de_lanzamiento_mas_antigua(tmp_path):
     # no se pudo resolver no debe adelantar a la canción).
     assert list(ordenado["cancion"]) == ["vieja", "nueva", "sin_fecha"]
     assert "_fecha_orden" not in ordenado.columns
+
+
+def test_las_fechas_incompletas_de_spotify_no_mandan_la_cancion_al_final(tmp_path):
+    """Spotify devuelve "1995" o "2006-03" cuando no sabe el día o el mes.
+
+    `pd.to_datetime` deduce el formato de la primera fila y convierte en NaT
+    todo lo que no coincida, así que esas canciones terminaban al final de
+    su grupo aunque sí tuvieran fecha. Pasó de verdad en la semana 39:
+    "Zombie" (1994) salía en el puesto 241, el último, en vez del 157.
+    """
+    listado = pd.DataFrame({
+        "cancion": ["dia_completo", "solo_anio", "anio_y_mes", "sin_fecha"],
+        "cuenta_10": [1, 1, 1, 1], "cuenta_30": [0, 0, 0, 0], "cuenta_50": [0, 0, 0, 0],
+        "cuenta_100": [0, 0, 0, 0], "cuenta_200": [0, 0, 0, 0],
+        # La primera es una fecha completa a propósito: es la que pandas
+        # tomaba como formato de toda la columna.
+        "fecha_lanzamiento": ["2026-05-21", "1995", "2006-03", None],
+    })
+
+    ordenado = chart_semanal.ordenar_listado(listado)
+
+    assert list(ordenado["cancion"]) == ["solo_anio", "anio_y_mes", "dia_completo", "sin_fecha"]

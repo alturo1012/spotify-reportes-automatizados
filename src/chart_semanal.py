@@ -284,6 +284,16 @@ def ordenar_listado(listado: pd.DataFrame) -> pd.DataFrame:
     Las canciones sin fecha de lanzamiento quedan al final de su grupo, no
     primero: una fecha que no se pudo resolver no debería adelantar a la
     canción.
+
+    OJO con la fecha: se normaliza con `spotify_release_dates.a_fecha`, NO
+    con `pd.to_datetime`. Spotify devuelve fechas incompletas cuando no sabe
+    el día o el mes ("1995", "2006-03"), y `pd.to_datetime` deduce el formato
+    de la primera fila de la columna y convierte en NaT todo lo que no
+    coincida -- con lo que esas canciones se iban al final de su grupo aunque
+    sí tuvieran fecha. Se vio en la semana 39: "Las Seis / Joe Vasconcellos"
+    (1995) quedaba detrás de una de 2026. `a_fecha` es la misma función que
+    usa el Excel para escribir la columna, así que ordenar y mostrar quedan
+    siempre de acuerdo.
     """
     claves = [f"cuenta_{banda}" for banda in config.BANDAS_CHART if f"cuenta_{banda}" in listado]
     if not claves:
@@ -293,7 +303,9 @@ def ordenar_listado(listado: pd.DataFrame) -> pd.DataFrame:
         claves.append("_fecha_orden")
         ascendente.append(True)
         listado = listado.copy()
-        listado["_fecha_orden"] = pd.to_datetime(listado["fecha_lanzamiento"], errors="coerce")
+        listado["_fecha_orden"] = [
+            spotify_release_dates.a_fecha(v) for v in listado["fecha_lanzamiento"]
+        ]
 
     ordenado = listado.sort_values(
         claves, ascending=ascendente, na_position="last", kind="mergesort"
