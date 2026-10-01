@@ -276,3 +276,65 @@ class TestCompletarSemanaSembrada:
         df, avisos = mensual.calcular_mes(2026, 8)
         assert not any("sin streams ni tracks" in a for a in avisos)
         assert not df.empty
+
+
+class TestSemaforo:
+    """Los colores de la plantilla. Umbrales tomados del formato condicional
+    real (celdas BG2/BH2/BI2/BJ2/BL2 de su hoja "Resumen")."""
+
+    def test_el_resumen_usa_el_objetivo_del_30_por_ciento(self):
+        rojo = config.MENSUAL_COLOR_ROJO
+        amarillo = config.MENSUAL_COLOR_AMARILLO
+        verde = config.MENSUAL_COLOR_VERDE
+        celeste = config.MENSUAL_COLOR_DESTACADO
+        casos = [
+            (0.29, rojo), (0.294, rojo),         # 29% o menos
+            (0.295, amarillo), (0.30, amarillo), (0.3049, amarillo),   # 30%
+            (0.305, verde), (0.33, verde), (0.39, verde),              # 31% o más
+            (0.40, celeste), (0.51, celeste),                          # 40% o más
+        ]
+        for valor, esperado in casos:
+            assert mensual_reporte.color_universal(valor) == esperado, valor
+
+    def test_sin_valor_no_hay_color(self):
+        assert mensual_reporte.color_universal(None) is None
+
+    def test_universal_va_en_verde_cuando_es_el_sello_mas_alto(self):
+        colores = mensual_reporte.colores_del_bloque(
+            {"Universal": 0.40, "Sony": 0.30, "Warner": 0.20})
+        assert colores == {"Universal": config.MENSUAL_COLOR_VERDE}
+
+    def test_los_sellos_que_le_ganan_a_universal_van_en_rojo(self):
+        colores = mensual_reporte.colores_del_bloque(
+            {"Universal": 0.20, "Sony": 0.45, "Warner": 0.25, "Indies": 0.10})
+        assert colores == {"Sony": config.MENSUAL_COLOR_ROJO,
+                           "Warner": config.MENSUAL_COLOR_ROJO}
+        # Universal no se pinta de verde si no es el más alto.
+        assert "Universal" not in colores
+
+    def test_empatar_no_cuenta_como_ganarle(self):
+        colores = mensual_reporte.colores_del_bloque({"Universal": 0.30, "Sony": 0.30})
+        assert colores == {"Universal": config.MENSUAL_COLOR_VERDE}
+
+    def test_el_excel_sale_pintado(self, tmp_path):
+        filas = []
+        for banda in config.MENSUAL_BANDAS:
+            for sello, pct in [("Universal", 0.2), ("Sony", 0.5), ("INgrooves", 0.075),
+                               ("Virgin", 0.075), ("Orchard", 0.05), ("Warner", 0.05),
+                               ("Indies", 0.05)]:
+                filas.append({"anio": 2026, "mes": 9, "country_code": "CO", "banda": banda,
+                              "label_group": sello, "tracks": 1.0, "origen": "calculado",
+                              "streams_millones": pct * 100, "pct_streams": pct})
+        ruta = mensual_reporte.generar_reporte(
+            pd.DataFrame(filas), tmp_path / "mensual.xlsx", hasta=(2026, 9))
+        wb = openpyxl.load_workbook(ruta)
+        cols = mensual_reporte.calendario(config.MENSUAL_INICIO, (2026, 9))
+        columna = 3 + cols.index((2026, 9))
+        co = wb["CO"]
+        # Fila 4 = Universal, fila 5 = Sony (ver config.MENSUAL_ORDEN_PAIS).
+        assert co.cell(5, columna).fill.start_color.rgb[-6:] == config.MENSUAL_COLOR_ROJO[0]
+        # Universal con 20% en el Resumen: rojo (por debajo del objetivo).
+        resumen = wb["Resumen"]
+        columna_res = 4 + cols.index((2026, 9))
+        celda = resumen.cell(5 + cols.index((2026, 9)), 4)
+        assert celda.fill.start_color.rgb[-6:] == config.MENSUAL_COLOR_ROJO[0]

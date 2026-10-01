@@ -44,6 +44,62 @@ FMT_STREAMS = '#,##0.00_ ;[Red]\\-#,##0.00\\ '
 FMT_PCT = "0%"
 
 _BORDE = Border(*[Side(style="thin", color="FFBFBFBF")] * 4)
+# Línea negra fina: la que usa la plantilla para encajonar los encabezados y
+# para separar un país del siguiente.
+_LINEA = Side(style="thin", color="FF000000")
+
+# Anchos de columna del "Resumen", tal cual los trae la plantilla.
+ANCHO_IZQUIERDA = 1.45     # columna A, un margen angosto
+ANCHO_MESES = 11.0         # columna B, las etiquetas de mes
+ANCHO_SEPARADOR = 1.0      # la columna entre un país y el siguiente
+ANCHO_BANDA = 4.54         # cada una de las cuatro columnas de banda
+
+
+def _pintar(celda, colores) -> None:
+    """Pinta una celda con un par (relleno, color de letra) de config."""
+    if colores is None:
+        return
+    fondo, texto = colores
+    celda.fill = PatternFill("solid", start_color=fondo, end_color=fondo)
+    celda.font = Font(size=celda.font.sz or 10, color=texto)
+
+
+def color_universal(valor):
+    """El color de una celda de % de Universal en el "Resumen", con los
+    mismos umbrales que trae el formato condicional de la plantilla.
+
+    El objetivo de participación de Universal es el 30%. Los cortes están
+    puestos de forma que el color cuadre con el número redondeado que se ve:
+    31% o más verde, 30% amarillo, 29% o menos rojo. Por encima del 40% se
+    pinta de celeste, que en la plantilla es una regla aparte y manda sobre
+    el verde.
+    """
+    if valor is None:
+        return None
+    if valor > config.MENSUAL_UMBRAL_DESTACADO:
+        return config.MENSUAL_COLOR_DESTACADO
+    if valor > config.MENSUAL_UMBRAL_VERDE:
+        return config.MENSUAL_COLOR_VERDE
+    if valor < config.MENSUAL_UMBRAL_ROJO:
+        return config.MENSUAL_COLOR_ROJO
+    return config.MENSUAL_COLOR_AMARILLO
+
+
+def colores_del_bloque(valores_por_sello: dict) -> dict:
+    """El color de cada sello dentro de un bloque de una hoja de país.
+
+    Es la regla de la plantilla, que ahí vive como formato condicional:
+    Universal va en VERDE cuando es el sello más alto del bloque, y cualquier
+    sello que le gane a Universal va en ROJO. Los demás quedan sin color.
+    """
+    universal = valores_por_sello.get("Universal")
+    if universal is None:
+        return {}
+    otros = {s: v for s, v in valores_por_sello.items() if s != "Universal" and v is not None}
+    por_encima = {s: config.MENSUAL_COLOR_ROJO for s, v in otros.items() if v > universal}
+    if por_encima:
+        return por_encima
+    return {"Universal": config.MENSUAL_COLOR_VERDE}
 
 # Etiquetas de los tres bloques de cada banda en las hojas Det.
 BLOQUES = [
@@ -265,6 +321,14 @@ def hoja_pais(wb, pais: str, nombre: str, valores: Valores, columnas: list) -> N
         celda.font = Font(bold=True, size=10)
         celda.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws.merge_cells(start_row=fila, start_column=1, end_row=fila + 6, end_column=1)
+        # Los colores se deciden por bloque (banda x mes), comparando los
+        # siete sellos entre sí -- ver `colores_del_bloque`.
+        colores = {
+            (anio, clave): colores_del_bloque(
+                {lab: valores.celda(banda, anio, clave, "pct", lab)
+                 for lab in config.MENSUAL_ORDEN_PAIS})
+            for (anio, clave) in columnas
+        }
         for j, label in enumerate(config.MENSUAL_ORDEN_PAIS):
             ws.cell(fila + j, 2).value = config.MENSUAL_NOMBRES_PAIS[label]
             ws.cell(fila + j, 2).font = Font(size=10)
@@ -274,48 +338,77 @@ def hoja_pais(wb, pais: str, nombre: str, valores: Valores, columnas: list) -> N
                 c.number_format = FMT_PCT
                 c.font = Font(size=10)
                 c.border = _BORDE
+                _pintar(c, colores[(anio, clave)].get(label))
         fila += 8
     ws.freeze_panes = "C3"
 
 
 def hoja_resumen(wb, valores_por_pais: dict, columnas: list) -> None:
     ws = wb.create_sheet("Resumen", 0)
-    ws.column_dimensions["A"].width = 3
-    ws.column_dimensions["B"].width = 14
-    ws.column_dimensions["C"].width = 3
+    # Anchos exactos de la plantilla. La columna que separa un país del
+    # siguiente es angosta a propósito (1 carácter): lo que divide los países
+    # son las líneas de los costados, no un hueco. Si se deja el ancho por
+    # defecto quedan unos espacios enormes entre bloques.
+    ws.column_dimensions["A"].width = ANCHO_IZQUIERDA
+    ws.column_dimensions["B"].width = ANCHO_MESES
+    ws.column_dimensions["C"].width = ANCHO_SEPARADOR
     titulo = ws.cell(1, 2)
     titulo.value = "Resumen / Market Share UM"
     titulo.font = Font(bold=True, size=12, color=BLANCO)
-    titulo.fill = PatternFill("solid", start_color=AZUL, end_color=AZUL)
+    titulo.alignment = Alignment(horizontal="center", vertical="center")
+    for c in range(2, 8):
+        ws.cell(1, c).fill = PatternFill("solid", start_color=AZUL, end_color=AZUL)
+    ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=7)
 
-    ws.cell(3, 2).value = "MES /TOP"
-    ws.cell(3, 2).font = Font(bold=True, size=9, color=BLANCO)
-    ws.cell(3, 2).fill = PatternFill("solid", start_color=AZUL, end_color=AZUL)
+    # Encabezados como en la plantilla: sin relleno, negrita negra y
+    # centrados, con un recuadro de línea fina. Las líneas verticales de los
+    # costados siguen bajando por todas las filas de datos, que es lo que
+    # separa visualmente un país del siguiente.
+    mes_top = ws.cell(3, 2)
+    mes_top.value = "MES /TOP"
+    mes_top.font = Font(bold=True, size=9)
+    mes_top.alignment = Alignment(horizontal="center", vertical="center")
+    mes_top.border = Border(left=_LINEA, right=_LINEA, top=_LINEA, bottom=_LINEA)
 
+    ancho = len(config.MENSUAL_BANDAS_RESUMEN)
     col = 4
     for pais, nombre in config.MENSUAL_PAISES:
+        for k in range(ancho):
+            c = ws.cell(3, col + k)
+            c.border = Border(top=_LINEA, bottom=_LINEA,
+                              left=_LINEA if k == 0 else None,
+                              right=_LINEA if k == ancho - 1 else None)
         cab = ws.cell(3, col)
         cab.value = nombre
-        cab.font = Font(bold=True, size=9, color=BLANCO)
-        cab.fill = PatternFill("solid", start_color=AZUL, end_color=AZUL)
-        cab.alignment = Alignment(horizontal="center")
-        ws.merge_cells(start_row=3, start_column=col,
-                       end_row=3, end_column=col + len(config.MENSUAL_BANDAS_RESUMEN) - 1)
+        cab.font = Font(bold=True, size=9)
+        cab.alignment = Alignment(horizontal="center", vertical="center")
+        ws.merge_cells(start_row=3, start_column=col, end_row=3, end_column=col + ancho - 1)
         for k, banda in enumerate(config.MENSUAL_BANDAS_RESUMEN):
             c = ws.cell(4, col + k)
             c.value = banda
             c.font = Font(bold=True, size=9)
-            c.fill = PatternFill("solid", start_color=GRIS, end_color=GRIS)
             c.alignment = Alignment(horizontal="center")
-            ws.column_dimensions[get_column_letter(col + k)].width = 7
-        col += len(config.MENSUAL_BANDAS_RESUMEN) + 1
+            c.border = Border(bottom=_LINEA,
+                              left=_LINEA if k == 0 else None,
+                              right=_LINEA if k == ancho - 1 else None)
+            ws.column_dimensions[get_column_letter(col + k)].width = ANCHO_BANDA
+        ws.column_dimensions[get_column_letter(col + ancho)].width = ANCHO_SEPARADOR
+        col += ancho + 1
 
     for i, (anio, clave) in enumerate(columnas):
         fila = 5 + i
         etq = ws.cell(fila, 2)
-        etq.value = etiqueta(anio, clave).replace("\n", " ")
-        etq.font = Font(size=9, bold=not isinstance(clave, int))
+        # Acá el mes lleva el año pegado ("may-17"), como en la plantilla: la
+        # columna es larguísima y sin el año uno se pierde al bajar.
+        etq.value = (f"{config.MESES_ES_ABREV[clave]}-{anio % 100:02d}"
+                     if isinstance(clave, int) else etiqueta(anio, clave).replace("\n", " "))
+        etq.font = Font(size=9, bold=not isinstance(clave, int), color="000000")
+        etq.fill = PatternFill("solid", start_color=config.MENSUAL_COLOR_MESES,
+                               end_color=config.MENSUAL_COLOR_MESES)
+        etq.alignment = Alignment(horizontal="center")
+        etq.border = _BORDE
         col = 4
+        ultima = len(config.MENSUAL_BANDAS_RESUMEN) - 1
         for pais, _ in config.MENSUAL_PAISES:
             valores = valores_por_pais.get(pais)
             for k, banda in enumerate(config.MENSUAL_BANDAS_RESUMEN):
@@ -323,9 +416,56 @@ def hoja_resumen(wb, valores_por_pais: dict, columnas: list) -> None:
                 c.value = valores.celda(banda, anio, clave, "pct", "Universal") if valores else None
                 c.number_format = FMT_PCT
                 c.font = Font(size=9)
-                c.border = _BORDE
+                # Cuadrícula tenue adentro y línea negra en los bordes del
+                # bloque, para que el país quede encajonado de arriba abajo.
+                c.border = Border(
+                    top=_BORDE.top, bottom=_BORDE.bottom,
+                    left=_LINEA if k == 0 else _BORDE.left,
+                    right=_LINEA if k == ultima else _BORDE.right)
+                _pintar(c, color_universal(c.value))
             col += len(config.MENSUAL_BANDAS_RESUMEN) + 1
+    _leyenda(ws, 1, 9)
     ws.freeze_panes = "D5"
+
+
+def _leyenda(ws, fila: int, col_inicio: int) -> None:
+    """La leyenda de colores, arriba del cuadro. La plantilla trae los
+    umbrales sueltos en unas celdas lejos de la vista (BG2:BL2); acá se
+    escriben con su color al lado del título, que se entiende sin tener que
+    ir a buscarlos."""
+    textos = [
+        (config.MENSUAL_COLOR_DESTACADO, "40% o más"),
+        (config.MENSUAL_COLOR_VERDE, "31% o más"),
+        (config.MENSUAL_COLOR_AMARILLO, "30% (objetivo)"),
+        (config.MENSUAL_COLOR_ROJO, "29% o menos"),
+    ]
+    col = col_inicio
+    for colores, texto in textos:
+        celda = ws.cell(fila, col)
+        celda.value = texto
+        celda.alignment = Alignment(horizontal="center")
+        celda.border = _BORDE
+        _pintar(celda, colores)
+        celda.font = Font(size=9, color=colores[1])
+        ws.merge_cells(start_row=fila, start_column=col, end_row=fila, end_column=col + 3)
+        col += 5
+
+
+def configurar_impresion(ws, filas_titulo: str = None) -> None:
+    """Deja la hoja lista para imprimir: apaisada, márgenes angostos, ajustada
+    al ancho de la página y repitiendo los encabezados en cada hoja.
+
+    Sin esto, una hoja con más de cien columnas sale partida en pedazos
+    imposibles de leer."""
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins.left = ws.page_margins.right = 0.25
+    ws.page_margins.top = ws.page_margins.bottom = 0.4
+    ws.page_margins.header = ws.page_margins.footer = 0.2
+    if filas_titulo:
+        ws.print_title_rows = filas_titulo
 
 
 def _cierres_por_pais(cierres) -> dict:
@@ -366,6 +506,11 @@ def generar_reporte(mensual, path, hasta: tuple, desde: tuple = None, cierres=No
         hoja_pais(wb, pais, nombre, valores_por_pais[pais], columnas)
     for pais, _ in config.MENSUAL_PAISES:
         hoja_det(wb, pais, valores_por_pais[pais], columnas)
+
+    for hoja in wb.worksheets:
+        # El Resumen lleva los meses en las filas, así que lo que se repite al
+        # imprimir son sus dos filas de encabezado; las otras hojas no.
+        configurar_impresion(hoja, "3:4" if hoja.title == "Resumen" else None)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)

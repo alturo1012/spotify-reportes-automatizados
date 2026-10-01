@@ -508,3 +508,28 @@ MENSUAL_NOMBRES_PAIS = {
 # El histórico arranca en mayo de 2017, que es donde empieza la plantilla.
 MENSUAL_INICIO = (2017, 5)
 MENSUAL_ARCHIVO = "Market Share Spotify Latam a {mes} de {anio}.xlsx"
+
+
+# Semáforo del reporte mensual. Son los mismos umbrales y colores que trae la
+# plantilla real en su formato condicional (celdas BG2/BH2/BI2/BJ2/BL2 de la
+# hoja "Resumen"): el objetivo de Universal es el 30%, y los cortes están
+# puestos de forma que lo que se ve redondeado a entero cuadre con el color.
+#
+#   31% o más  -> verde      (> 0,3049)
+#   30%        -> amarillo   (entre 0,295 y 0,3049)
+#   29% o menos-> rojo       (< 0,295)
+#   40% o más  -> celeste    (> 0,395), por encima del verde
+MENSUAL_UMBRAL_VERDE = 0.3049
+MENSUAL_UMBRAL_ROJO = 0.295
+MENSUAL_UMBRAL_DESTACADO = 0.395
+
+# (relleno, color de letra). Los tres primeros son los colores estándar de
+# Excel para "bueno / neutral / malo"; el celeste es el que usa la plantilla.
+MENSUAL_COLOR_VERDE = ("C6EFCE", "006100")
+MENSUAL_COLOR_AMARILLO = ("FFEB9C", "9C5700")
+MENSUAL_COLOR_ROJO = ("FFC7CE", "9C0006")
+MENSUAL_COLOR_DESTACADO = ("2EE2FA", "000000")
+
+# Azul grisáceo de la columna de meses del "Resumen" (en la plantilla es un
+# color de tema, dk2 aclarado al 40%).
+MENSUAL_COLOR_MESES = "8497B0"
