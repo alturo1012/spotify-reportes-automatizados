@@ -12,6 +12,12 @@ Fórmula real (verificada contra PLANTILLA_SEMANAL_MS_TOP200.xlsx, filas
 Se compara el mismo número de semanas (1..N) entre el año en curso y el
 año anterior. NO es un promedio de porcentajes semanales.
 
+OJO: esa fórmula necesita los streams crudos de todas las semanas 1..N, y
+el reporte oficial dejó de traerlos (la plantilla de trabajo que los tenía
+ya no existe). Cuando faltan, `calcular_ytd_por_pais` cae a una
+aproximación -- el promedio del % semanal -- que se desvía 0,1 puntos en
+promedio. Ver su docstring para el detalle y las mediciones.
+
 La pestaña resumen "% Market Share" se escribe como una cuadrícula de
 tablas, una por país (4 por fila de bloques), replicando el formato visual
 de PLANTILLA_SEMANAL_MS_TOP200.xlsx -- ver _escribir_resumen_pct.
@@ -25,24 +31,72 @@ PLANTILLA_SEMANAL_MS_TOP200.xlsx (ver _escribir_pagina_pais / Ajuste 7 en
 el plan). Las otras dos sub-tablas de la plantilla real por banda ("Tracks"
 y "Streams" crudo) se dejaron fuera a pedido del usuario -- solo la de "%".
 
-Ojo con el histórico disponible: esta cuadrícula solo puede tener columnas
-para las semanas que ya se guardaron en chart_track_weekly, que empezó a
-llenarse recién en el Ajuste 5 (no tiene sembrado retroactivo de años
-anteriores, a diferencia de ms_label_weekly). El usuario decidió a
-propósito no importar el histórico ya calculado del archivo real (que sí
-llega hasta 2021) -- la cuadrícula arranca vacía y se va llenando semana a
-semana hacia adelante, igual que Detalle Tracks.
+El histórico de esa cuadrícula vive en `history.ms_band_label_weekly` y
+tiene dos orígenes que se complementan: se sembró de una vez con los años
+que ya traía calculados el reporte real (2021 semana 1 -> 2026 semana 33,
+293 semanas x 17 países) y, de ahí en adelante, cada semana nueva se agrega
+sola al generar el reporte (`history.append_semana_ms_bandas`, misma
+fórmula). Antes se calculaba al vuelo desde `chart_track_weekly` y por eso
+salía casi vacía -- ver "Actualización a la semana 33" en
+claude/plan_fusion_paso_a_paso.md.
 """
 from pathlib import Path
 import pandas as pd
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from . import config, history
 
 
+def _semanas_completas(streams_pais_anio, hasta_semana: int) -> bool:
+    """True si `ms_label_weekly` tiene TODAS las semanas 1..N de ese año.
+
+    Es lo que decide si el YTD se puede calcular con la fórmula exacta (ver
+    calcular_ytd_por_pais). Con un hueco en el medio, sumar los streams que
+    sí están daría un número mal: sería el share de un subconjunto de
+    semanas, no del período 1..N.
+    """
+    if hasta_semana <= 0 or streams_pais_anio.empty:
+        return False
+    presentes = set(streams_pais_anio["semana"].astype(int))
+    return set(range(1, hasta_semana + 1)).issubset(presentes)
+
+
+def _ytd_exacto(streams_actual_df, streams_anterior_df) -> tuple:
+    """Fórmula exacta: suma de streams del sello / suma de los 7 sellos."""
+    streams_actual = streams_actual_df.groupby("label_group")["streams_top200"].sum()
+    streams_anterior = streams_anterior_df.groupby("label_group")["streams_top200"].sum()
+    total_actual = streams_actual.sum()
+    total_anterior = streams_anterior.sum()
+    return (
+        {lab: float(streams_actual.get(lab, 0.0)) / total_actual if total_actual else 0.0
+         for lab in config.LABEL_GROUPS_MS},
+        {lab: float(streams_anterior.get(lab, 0.0)) / total_anterior if total_anterior else 0.0
+         for lab in config.LABEL_GROUPS_MS},
+    )
+
+
+def _ytd_promedio_semanal(bandas_pais, anio: int, hasta_semana: int) -> dict:
+    """Aproximación: promedio del % semanal de la banda 200, semanas 1..N.
+
+    Se usa cuando no hay streams crudos para todo el período (ver
+    calcular_ytd_por_pais). Equivale a la fórmula exacta suponiendo que
+    todas las semanas pesan lo mismo.
+    """
+    del_anio = bandas_pais[
+        (bandas_pais["anio"] == anio)
+        & (bandas_pais["banda"] == 200)
+        & (bandas_pais["semana"] <= hasta_semana)
+    ]
+    if del_anio.empty:
+        return {lab: 0.0 for lab in config.LABEL_GROUPS_MS}
+    promedio = del_anio.groupby("label_group")["pct_streams"].mean()
+    return {lab: float(promedio.get(lab, 0.0)) for lab in config.LABEL_GROUPS_MS}
+
+
 def calcular_ytd_por_pais(
-    country_code: str, anio_actual: int, hasta_semana: int
+    country_code: str, anio_actual: int, hasta_semana: int,
+    streams: pd.DataFrame = None, bandas: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """% Market Share YTD de un país: un DataFrame con una fila por sello
     (en el orden de config.LABEL_GROUPS_MS), comparando anio_actual vs.
@@ -52,38 +106,80 @@ def calcular_ytd_por_pais(
     Esto evita comparar, por ejemplo, 25 semanas de 2026 contra solo 24 de
     2025 si el histórico del año anterior no llega tan lejos todavía — la
     comparación YTD deja de tener sentido si no son las mismas semanas.
+
+    DOS FORMAS DE CALCULARLO, y se elige sola según los datos que haya:
+
+    1. EXACTA (la de siempre, validada contra 238 valores reales del reporte
+       oficial sin una sola diferencia): suma los streams del sello en las
+       semanas 1..N y los divide entre la suma de los 7 sellos. Requiere
+       tener los streams crudos de TODAS esas semanas en `ms_label_weekly`.
+
+    2. PROMEDIO DEL % SEMANAL: promedia el porcentaje de la banda 200 de
+       cada semana, tomándolo de `ms_band_label_weekly`. Se usa cuando
+       faltan streams crudos de alguna semana del período.
+
+    Por qué hizo falta la segunda: el reporte oficial dejó de traer los
+    streams crudos por sello (la plantilla de trabajo que los tenía ya no
+    existe), así que el histórico de streams se quedó en la semana 24 de
+    2026 mientras el de porcentajes llega a la 33. Sin la aproximación, el
+    YTD compararía 24 semanas contra 24 en un reporte que dice "a Sem 33".
+
+    Qué tan buena es: medido sobre las semanas 1-24 de 2026, donde sí se
+    pueden calcular las dos, la diferencia es de 0,099 puntos en promedio
+    (mediana 0,049; peor caso 0,841; solo 4 de 119 valores se pasan de medio
+    punto). Es tan chica porque el tamaño de una semana varía poco: el total
+    semanal de Colombia en 2026 se mueve apenas un 6%.
+
+    Se prefiere SIEMPRE la exacta cuando los datos alcanzan, así que en
+    cuanto un año tenga los streams crudos completos (2027 en adelante, que
+    ya arranca sin huecos) el cálculo vuelve solo a la fórmula validada.
     """
     anio_anterior = anio_actual - 1
 
-    historico_pais_anterior = history.cargar_ms_label_weekly()
-    historico_pais_anterior = historico_pais_anterior[
-        (historico_pais_anterior["country_code"] == country_code)
-        & (historico_pais_anterior["anio"] == anio_anterior)
+    # `streams` y `bandas` se pueden pasar ya cargadas: el histórico por
+    # banda son 171.850 filas y leerlo de SQLite una vez por país (17 veces
+    # por reporte, más otras 17 para las pestañas) costaba 15 de los 22
+    # segundos que tardaba la corrida.
+    streams = history.cargar_ms_label_weekly() if streams is None else streams
+    streams_pais = streams[streams["country_code"] == country_code]
+    bandas = history.cargar_ms_band_label_weekly() if bandas is None else bandas
+    bandas_pais = bandas[bandas["country_code"] == country_code] if not bandas.empty else bandas
+
+    # Hasta dónde llega el año anterior: se mira la fuente más completa de
+    # las dos, porque el histórico de porcentajes llega más lejos que el de
+    # streams.
+    def semana_maxima(anio):
+        candidatas = [
+            df.loc[df["anio"] == anio, "semana"].max()
+            for df in (streams_pais, bandas_pais)
+            if not df.empty and (df["anio"] == anio).any()
+        ]
+        return int(max(candidatas)) if candidatas else 0
+
+    hasta_semana_efectiva = min(hasta_semana, semana_maxima(anio_anterior))
+
+    ytd_actual = streams_pais[
+        (streams_pais["anio"] == anio_actual) & (streams_pais["semana"] <= hasta_semana_efectiva)
     ]
-    semana_max_anterior = (
-        int(historico_pais_anterior["semana"].max())
-        if not historico_pais_anterior.empty
-        else 0
+    ytd_anterior = streams_pais[
+        (streams_pais["anio"] == anio_anterior) & (streams_pais["semana"] <= hasta_semana_efectiva)
+    ]
+
+    hay_streams_completos = (
+        _semanas_completas(ytd_actual, hasta_semana_efectiva)
+        and _semanas_completas(ytd_anterior, hasta_semana_efectiva)
     )
-    hasta_semana_efectiva = min(hasta_semana, semana_max_anterior)
 
-    ytd_actual = history.query_ytd_ms(anio_actual, hasta_semana_efectiva)
-    ytd_actual = ytd_actual[ytd_actual["country_code"] == country_code]
-    ytd_anterior = history.query_ytd_ms(anio_anterior, hasta_semana_efectiva)
-    ytd_anterior = ytd_anterior[ytd_anterior["country_code"] == country_code]
-
-    streams_actual = ytd_actual.groupby("label_group")["streams_top200"].sum()
-    streams_anterior = ytd_anterior.groupby("label_group")["streams_top200"].sum()
-
-    total_actual = streams_actual.sum()
-    total_anterior = streams_anterior.sum()
+    if hay_streams_completos:
+        pct_actual_por_label, pct_anterior_por_label = _ytd_exacto(ytd_actual, ytd_anterior)
+    else:
+        pct_actual_por_label = _ytd_promedio_semanal(bandas_pais, anio_actual, hasta_semana_efectiva)
+        pct_anterior_por_label = _ytd_promedio_semanal(bandas_pais, anio_anterior, hasta_semana_efectiva)
 
     filas = []
     for label in config.LABEL_GROUPS_MS:
-        s_actual = float(streams_actual.get(label, 0.0))
-        s_anterior = float(streams_anterior.get(label, 0.0))
-        pct_actual = s_actual / total_actual if total_actual else 0.0
-        pct_anterior = s_anterior / total_anterior if total_anterior else 0.0
+        pct_actual = pct_actual_por_label[label]
+        pct_anterior = pct_anterior_por_label[label]
         filas.append({
             "label_group": label,
             f"pct_YTD_{anio_actual}": pct_actual,
@@ -93,39 +189,32 @@ def calcular_ytd_por_pais(
     return pd.DataFrame(filas)
 
 
-def calcular_streams_pct_grid(country_code: str) -> pd.DataFrame:
+def calcular_streams_pct_grid(country_code: str, bandas: pd.DataFrame = None) -> pd.DataFrame:
     """Tabla larga (tidy) con el % de streams por banda y sello, semana a
-    semana, para un país -- igual a lo que muestran las sub-tablas
-    "Streams (%) TOP N" de PLANTILLA_SEMANAL_MS_TOP200.xlsx, pero a partir
-    del detalle track-por-track de history.chart_track_weekly (no de un
-    agregado guardado aparte -- se calcula al vuelo cada vez que se genera
-    el reporte).
+    semana, para un país -- lo que muestran las sub-tablas "Streams (%)
+    TOP N" del reporte real.
 
-    Una fila por (anio, semana, chart_date, banda, label_group, pct). Solo
-    incluye las semanas que ya están en chart_track_weekly para ese país
-    (ver nota del módulo sobre por qué no hay histórico antes del Ajuste 5).
+    Sale directo de `history.ms_band_label_weekly`, que trae dos cosas
+    juntas: el histórico sembrado del reporte oficial (2021 en adelante) y
+    cada semana nueva que se va cargando (la calcula
+    `history.append_semana_ms_bandas` con la misma fórmula). Antes esto se
+    calculaba al vuelo desde `chart_track_weekly`, que solo tenía las
+    semanas cargadas después del Ajuste 5 -- por eso la cuadrícula salía
+    casi vacía.
+
+    Una fila por (anio, semana, chart_date, banda, label_group, pct).
     """
-    tracks = history.cargar_chart_track_weekly()
-    tracks = tracks[tracks["country_code"] == country_code].copy()
-    if tracks.empty:
-        return pd.DataFrame(columns=["anio", "semana", "chart_date", "banda", "label_group", "pct"])
+    columnas = ["anio", "semana", "chart_date", "banda", "label_group", "pct"]
+    historico = history.cargar_ms_band_label_weekly() if bandas is None else bandas
+    if historico.empty:
+        return pd.DataFrame(columns=columnas)
 
-    tracks["stream_count"] = tracks["stream_count"].fillna(0.0)
+    del_pais = historico[historico["country_code"] == country_code]
+    if del_pais.empty:
+        return pd.DataFrame(columns=columnas)
 
-    filas = []
-    for (anio, semana, chart_date), grupo_semana in tracks.groupby(["anio", "semana", "chart_date"]):
-        for banda in config.BANDAS_MARKET_SHARE:
-            grupo_banda = grupo_semana[grupo_semana["position"] <= banda]
-            total = grupo_banda["stream_count"].sum()
-            streams_por_label = grupo_banda.groupby("label_group")["stream_count"].sum()
-            for label in config.LABEL_GROUPS_MS:
-                streams_label = float(streams_por_label.get(label, 0.0))
-                pct = streams_label / total if total else 0.0
-                filas.append({
-                    "anio": anio, "semana": semana, "chart_date": chart_date,
-                    "banda": banda, "label_group": label, "pct": pct,
-                })
-    return pd.DataFrame(filas)
+    grid = del_pais.rename(columns={"pct_streams": "pct"})[columnas]
+    return grid.reset_index(drop=True)
 
 
 def construir_resumen_pct(anio_actual: int, hasta_semana: int) -> pd.DataFrame:
@@ -152,44 +241,188 @@ def construir_resumen_pct(anio_actual: int, hasta_semana: int) -> pd.DataFrame:
 #     y 7 filas de sellos debajo (config.ORDEN_LABELS_MS_RESUMEN). 4 bloques
 #     de país por fila, con una columna angosta de separación entre cada
 #     uno, igual que la plantilla real.
-# NOTA: la plantilla original resalta con colores algunas celdas de G/L,
-# pero la regla real (revisada en el archivo) no es simple ("mayor que la
-# fila de arriba", comparaciones entre celdas específicas) -- no se pudo
-# generalizar con certeza a partir de eso, así que se dejó fuera de este
-# ajuste a propósito. Avisar si se quiere una regla más simple (ej. verde si
-# G/L > 0, rojo si G/L < 0) para agregarla.
 _MS_COL_INICIAL = 2  # columna B, igual que la plantilla real (A queda vacía)
 _MS_COLS_POR_BLOQUE = 4  # nombre, YTD actual, YTD anterior, G/L
 _MS_BLOQUES_POR_FILA = 4
 _MS_FILAS_POR_BLOQUE = 11  # banner + blanco + subencabezado + 7 sellos + blanco
 _MS_FILA_BANNER_TOP200 = 2
 _MS_FILA_PRIMER_BLOQUE = 4
+# Semana y fecha de corte, en el rincón de arriba a la izquierda (donde el
+# archivo original lleva el logo de Spotify).
+_MS_FILA_SEMANA_TITULO = 2
+_MS_FILA_FECHA_TITULO = 3
 
 
-def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int) -> None:
+# ---------------------------------------------------------------------------
+# Semáforo del Reporte_MS_TOP200. La regla se sacó del formato condicional
+# REAL del reporte oficial (las fórmulas y los dxf de MS TOP 200 a la Sem 33),
+# no de mirar una captura, y es LA MISMA en las dos pestañas:
+#
+#   - Se pinta de ROJO el sello cuyo porcentaje le GANA a Universal dentro de
+#     su grupo. Es un reporte de Universal: lo que se quiere ver de un vistazo
+#     es quién va por delante.
+#   - Si Universal es el más alto del grupo, su propia celda va en VERDE.
+#
+#   El "grupo" es lo único que cambia entre las dos pestañas:
+#     · resumen "% Market Share": los 7 sellos de un país, por columna YTD.
+#     · pestaña de país: los 7 sellos de una banda, en la columna de esa semana.
+#
+#   La columna G/L (solo en el resumen) tiene su propia regla, por signo:
+#   VERDE si ganó participación, ROJO si perdió, AMARILLO si quedó igual. En
+#   el archivo real son tres reglas contra los umbrales de las celdas
+#   U1/V1/W1/X1, que están VACÍAS, y Excel las lee como 0 -- o sea, el signo.
+#
+# DOS ERRORES DE LA PLANTILLA ORIGINAL QUE ACÁ NO SE REPLICAN (a propósito).
+# Los dos están en la pestaña resumen; las pestañas de país sí la tienen bien:
+#   1. En 4 de los 5 bloques de fila, las reglas de las dos últimas filas
+#      (Indies y Virgin) comparan contra la fila del SUBENCABEZADO en vez de
+#      contra la de Universal (C17 en vez de C18, C28 en vez de C29, etc.).
+#      Como esa celda tiene el nombre del país (texto), en Excel un número
+#      nunca es "mayor que" un texto: esas dos filas NO se pintan nunca,
+#      aunque le ganen a Universal. Afecta a 13 de los 17 países.
+#   2. Los bloques 3 y 4 evalúan el verde con la fórmula del bloque 2
+#      (C18=MAX(C18:C24) sin actualizar al copiar), y el MAX del bloque 1
+#      deja a Virgin fuera del rango (C7:C12 en vez de C7:C13).
+# Acá la regla se aplica igual para los 7 sellos de los 17 países, así que
+# van a salir en rojo algunas celdas que en el archivo viejo no se pintaban.
+# ---------------------------------------------------------------------------
+
+def _referencia_grupo(valores_por_label: dict):
+    """Arma la referencia del semáforo para un grupo de 7 sellos.
+
+    `valores_por_label` es {label: valor o None}. Devuelve
+    {"universal": v, "maximo": m} o None si el grupo no tiene datos (todo en
+    cero o vacío): en ese caso no se pinta nada, porque si no Universal
+    saldría en verde por empate técnico y eso engaña.
+    """
+    presentes = [v for v in valores_por_label.values() if v is not None]
+    if not presentes or sum(presentes) == 0:
+        return None
+    return {"universal": valores_por_label.get("Universal"), "maximo": max(presentes)}
+
+
+def _pintar(celda, fondo: str, texto: str, tamano: int = None) -> None:
+    """Pinta relleno + color de letra. `tamano` es opcional porque pintar
+    reemplaza la fuente entera: si la celda ya tenía un tamaño distinto del
+    default (las hojas de este reporte lo suben, ver config.MS_FUENTE_TAMANO)
+    hay que volver a decirlo acá o se perdería al pintar. Sin `tamano`,
+    openpyxl deja el tamaño por defecto -- que es justo lo que necesita el
+    BMAT, que reusa estas funciones sin cambiar tamaños.
+    """
+    celda.fill = PatternFill(start_color=fondo, end_color=fondo, fill_type="solid")
+    celda.font = Font(color=texto, size=tamano)
+
+
+def _pintar_vs_universal(celda, valor, label: str, referencia, tamano: int = None) -> None:
+    """Rojo si le gana a Universal; verde en la celda de Universal si lidera."""
+    if valor is None or referencia is None or referencia["universal"] is None:
+        return
+    if label == "Universal":
+        if valor < referencia["maximo"]:
+            return
+        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE, tamano)
+    elif valor > referencia["universal"]:
+        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO, tamano)
+
+
+def _pintar_gl(celda, valor, tamano: int = None) -> None:
+    """Columna G/L del resumen: verde si ganó, rojo si perdió, amarillo si igual."""
+    if valor is None:
+        return
+    if valor > 0:
+        _pintar(celda, config.COLOR_SEMAFORO_VERDE, config.COLOR_TEXTO_SEMAFORO_VERDE, tamano)
+    elif valor < 0:
+        _pintar(celda, config.COLOR_SEMAFORO_ROJO, config.COLOR_TEXTO_SEMAFORO_ROJO, tamano)
+    else:
+        _pintar(celda, config.COLOR_SEMAFORO_AMARILLO, config.COLOR_TEXTO_SEMAFORO_AMARILLO, tamano)
+
+
+def _borde_cuadricula() -> Border:
+    """Borde fino en los cuatro lados -- la "cuadrícula" que se pidió en la
+    reunión del 14/09/2026, tanto para las tablas de país del resumen como
+    para las pestañas por país.
+    """
+    lado = Side(style="thin", color=config.COLOR_BORDE_CUADRICULA)
+    return Border(left=lado, right=lado, top=lado, bottom=lado)
+
+
+def _cuadricular(ws, fila_inicio: int, fila_fin: int, col_inicio: int, col_fin: int,
+                 borde: Border) -> None:
+    """Le pone el borde a todas las celdas del rectángulo indicado."""
+    for r in range(fila_inicio, fila_fin + 1):
+        for c in range(col_inicio, col_fin + 1):
+            ws.cell(row=r, column=c).border = borde
+
+
+def texto_week_ending(fecha) -> str:
+    """Fecha de corte con el mismo formato que usa el listado de canciones
+    del Chart Semanal: "Week Ending - 13 ago, 2026"."""
+    fecha = pd.Timestamp(fecha)
+    return f"Week Ending - {fecha.day:02d} {config.MESES_ES_ABREV[fecha.month]}, {fecha.year}"
+
+
+def _escribir_encabezado_semana(ws, hasta_semana: int, fecha, columna_final: int,
+                                negrita, centrado) -> None:
+    """Semana y fecha de corte del reporte, arriba a la izquierda -- donde el
+    archivo original tiene el logo de Spotify (pedido de la reunión: el
+    logo no, la semana y la fecha sí).
+
+    La semana es la última del histórico, que es hasta dónde llega el YTD de
+    la hoja; la fecha sale de la fuente que se acaba de cargar. Si no hay
+    fecha (se generó sin fuente), se escribe solo la semana.
+    """
+    celda_semana = ws.cell(row=_MS_FILA_SEMANA_TITULO, column=_MS_COL_INICIAL,
+                           value=f"Semana {hasta_semana}")
+    celda_fecha = ws.cell(row=_MS_FILA_FECHA_TITULO, column=_MS_COL_INICIAL,
+                          value=texto_week_ending(fecha) if fecha is not None else None)
+    for celda, fila in ((celda_semana, _MS_FILA_SEMANA_TITULO),
+                        (celda_fecha, _MS_FILA_FECHA_TITULO)):
+        ws.merge_cells(start_row=fila, start_column=_MS_COL_INICIAL,
+                       end_row=fila, end_column=columna_final)
+        celda.font = negrita
+        celda.alignment = centrado
+
+
+def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int,
+                          streams: pd.DataFrame = None, bandas: pd.DataFrame = None,
+                          fecha=None) -> None:
     """Escribe la pestaña resumen "% Market Share" como una cuadrícula de
     tablas por país (ver constantes _MS_* arriba) -- se arma directo con
     openpyxl (no con `.to_excel(...)`) por el mismo motivo que en
     chart_semanal.py: acá hace falta control celda por celda (banners
     combinados, freeze_panes) que `.to_excel(...)` no ofrece.
     """
-    negrita_banner = Font(bold=True, color=config.COLOR_BANNER_MS_TEXTO)
+    tamano = config.MS_FUENTE_TAMANO
+    negrita_banner = Font(bold=True, size=tamano, color=config.COLOR_BANNER_MS_TEXTO)
     relleno_banner = PatternFill(
         start_color=config.COLOR_BANNER_MS_FONDO, end_color=config.COLOR_BANNER_MS_FONDO, fill_type="solid"
     )
     centrado = Alignment(horizontal="center", vertical="center")
-    negrita = Font(bold=True)
+    negrita = Font(bold=True, size=tamano)
+    normal = Font(size=tamano)
+    borde = _borde_cuadricula()
 
     ancho_total_columnas = _MS_BLOQUES_POR_FILA * (_MS_COLS_POR_BLOQUE + 1) - 1
     columna_final = _MS_COL_INICIAL + ancho_total_columnas - 1
-    celda_top200 = ws.cell(row=_MS_FILA_BANNER_TOP200, column=_MS_COL_INICIAL, value="TOP 200 WEEKLY MARKET SHARE")
+
+    # El banner arranca en el SEGUNDO bloque de columnas para dejar libre el
+    # rincón de arriba a la izquierda, que es donde el reporte original tiene
+    # el logo de Spotify y debajo la fecha de corte. Acá va la semana y la
+    # fecha (el logo no se pone, lo pidió así el usuario).
+    columna_banner = _MS_COL_INICIAL + (_MS_COLS_POR_BLOQUE + 1)
+    celda_top200 = ws.cell(row=_MS_FILA_BANNER_TOP200, column=columna_banner,
+                           value="TOP 200 WEEKLY MARKET SHARE")
     ws.merge_cells(
-        start_row=_MS_FILA_BANNER_TOP200, start_column=_MS_COL_INICIAL,
+        start_row=_MS_FILA_BANNER_TOP200, start_column=columna_banner,
         end_row=_MS_FILA_BANNER_TOP200, end_column=columna_final,
     )
     celda_top200.font = Font(bold=True, size=14, color=config.COLOR_BANNER_MS_TEXTO)
     celda_top200.fill = relleno_banner
     celda_top200.alignment = centrado
+
+    _escribir_encabezado_semana(
+        ws, hasta_semana, fecha, columna_banner - 2, negrita, centrado
+    )
 
     etiqueta_actual = f"YTD {str(anio_actual)[-2:]}"
     etiqueta_anterior = f"YTD {str(anio_actual - 1)[-2:]}"
@@ -217,22 +450,55 @@ def _escribir_resumen_pct(ws, anio_actual: int, hasta_semana: int) -> None:
             celda.font = negrita
             celda.alignment = centrado
 
-        tabla_pais = calcular_ytd_por_pais(country_code, anio_actual, hasta_semana)
-        tabla_pais = tabla_pais.set_index("label_group")
+        tabla_pais = calcular_ytd_por_pais(
+            country_code, anio_actual, hasta_semana, streams=streams, bandas=bandas
+        ).set_index("label_group")
+
+        campo_actual = f"pct_YTD_{anio_actual}"
+        campo_anterior = f"pct_YTD_{anio_actual - 1}"
+
+        def valor_de(label, campo):
+            if label not in tabla_pais.index or campo not in tabla_pais.columns:
+                return None
+            return float(tabla_pais.loc[label, campo])
+
+        # Una referencia por columna YTD: el grupo es "los 7 sellos del país".
+        referencia = {
+            campo: _referencia_grupo({lab: valor_de(lab, campo) for lab in config.ORDEN_LABELS_MS_RESUMEN})
+            for campo in (campo_actual, campo_anterior)
+        }
+
         for k, label in enumerate(config.ORDEN_LABELS_MS_RESUMEN):
             r = fila_primer_dato + k
-            fila_label = tabla_pais.loc[label] if label in tabla_pais.index else None
-            ws.cell(row=r, column=col_inicio, value=label)
+            ws.cell(row=r, column=col_inicio, value=label).font = normal
             for col_offset, campo in enumerate(
-                [f"pct_YTD_{anio_actual}", f"pct_YTD_{anio_actual - 1}", "g_l"], start=1
+                [campo_actual, campo_anterior, "g_l"], start=1
             ):
-                valor = float(fila_label[campo]) if fila_label is not None else None
+                valor = valor_de(label, campo)
                 celda_valor = ws.cell(row=r, column=col_inicio + col_offset, value=valor)
                 celda_valor.number_format = "0.0%"
+                celda_valor.font = normal
+                if campo == "g_l":
+                    _pintar_gl(celda_valor, valor, tamano)
+                else:
+                    _pintar_vs_universal(celda_valor, valor, label, referencia[campo], tamano)
+
+        # La cuadrícula va desde el encabezado azul del país hasta la última
+        # fila de sello: el bloque completo, como se pidió. La fila en blanco
+        # que queda arriba del subencabezado NO se cuadricula -- es la
+        # separación visual entre el banner y la tabla.
+        _cuadricular(ws, fila_header, fila_header, col_inicio, col_fin, borde)
+        _cuadricular(
+            ws, fila_subheader, fila_primer_dato + len(config.ORDEN_LABELS_MS_RESUMEN) - 1,
+            col_inicio, col_fin, borde,
+        )
 
         for col in range(col_inicio, col_fin + 1):
-            ws.column_dimensions[get_column_letter(col)].width = 11
+            ws.column_dimensions[get_column_letter(col)].width = config.MS_ANCHO_COLUMNA
         ws.column_dimensions[get_column_letter(col_fin + 1)].width = 2  # separadora
+
+        for r in range(fila_header, fila_primer_dato + len(config.ORDEN_LABELS_MS_RESUMEN)):
+            ws.row_dimensions[r].height = config.MS_ALTO_FILA
 
     ws.freeze_panes = "A4"
 
@@ -254,37 +520,41 @@ _MSPAIS_FILA_SEMANA = 3
 _MSPAIS_FILA_PRIMER_DATO = 4
 
 
-def _escribir_pagina_pais(ws, country_code: str) -> None:
+def _escribir_pagina_pais(ws, country_code: str, bandas: pd.DataFrame = None) -> None:
     """Escribe la pestaña individual de un país como cuadrícula semanal
     (ver constantes _MSPAIS_* arriba). Si todavía no hay ninguna semana
     guardada en chart_track_weekly para este país, la cuadrícula sale sin
     columnas de datos (solo encabezados) -- se va llenando sola a medida
     que se cargan bases nuevas.
     """
-    negrita = Font(bold=True)
+    tamano = config.MS_FUENTE_TAMANO
+    negrita = Font(bold=True, size=tamano)
+    normal = Font(size=tamano)
     centrado = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    borde = _borde_cuadricula()
 
     nombre_visible = config.NOMBRE_PAIS_MS_RESUMEN.get(country_code, country_code)
     celda_titulo = ws.cell(
         row=_MSPAIS_FILA_TITULO, column=_MSPAIS_COL_BANDA,
         value=f"{nombre_visible} - % Market Share por banda (Streams)",
     )
-    celda_titulo.font = Font(bold=True, size=12)
+    celda_titulo.font = Font(bold=True, size=tamano + 2)
 
-    grid = calcular_streams_pct_grid(country_code)
+    grid = calcular_streams_pct_grid(country_code, bandas=bandas)
     semanas = (
         grid[["anio", "semana", "chart_date"]]
         .drop_duplicates()
         .sort_values(["anio", "semana"])
         .reset_index(drop=True)
     )
+    lista_semanas = list(semanas.itertuples(index=False))
     pct_por_celda = {
         (r.anio, r.semana, r.banda, r.label_group): r.pct for r in grid.itertuples(index=False)
     }
 
     ws.cell(row=_MSPAIS_FILA_SEMANA, column=_MSPAIS_COL_LABEL, value="Etiquetas\nde fila").font = negrita
 
-    for j, s in enumerate(semanas.itertuples(index=False)):
+    for j, s in enumerate(lista_semanas):
         col = _MSPAIS_COL_PRIMERA_SEMANA + j
         celda_fecha = ws.cell(row=_MSPAIS_FILA_FECHA, column=col, value=pd.Timestamp(s.chart_date))
         celda_fecha.number_format = "yyyy-mm-dd"
@@ -293,18 +563,37 @@ def _escribir_pagina_pais(ws, country_code: str) -> None:
         celda_semana = ws.cell(row=_MSPAIS_FILA_SEMANA, column=col, value=int(s.semana))
         celda_semana.font = negrita
         celda_semana.alignment = centrado
-        ws.column_dimensions[get_column_letter(col)].width = 11
+        ws.column_dimensions[get_column_letter(col)].width = config.MS_ANCHO_COLUMNA
+
+    # Referencia del semáforo: acá el grupo son los 7 sellos de UNA banda en
+    # UNA semana (en el resumen son los 7 sellos del país). Misma regla, ver
+    # _pintar_vs_universal.
+    referencia_por_celda = {
+        (s.anio, s.semana, banda): _referencia_grupo({
+            lab: pct_por_celda.get((s.anio, s.semana, banda, lab))
+            for lab in config.LABEL_GROUPS_MS
+        })
+        for s in lista_semanas
+        for banda in config.BANDAS_MARKET_SHARE
+    }
+
+    ultima_columna = _MSPAIS_COL_PRIMERA_SEMANA + len(lista_semanas) - 1
 
     fila = _MSPAIS_FILA_PRIMER_DATO
     for banda in config.BANDAS_MARKET_SHARE:
         fila_inicio_banda = fila
         for label in config.LABEL_GROUPS_MS:
-            ws.cell(row=fila, column=_MSPAIS_COL_LABEL, value=label)
-            for j, s in enumerate(semanas.itertuples(index=False)):
+            ws.cell(row=fila, column=_MSPAIS_COL_LABEL, value=label).font = normal
+            for j, s in enumerate(lista_semanas):
                 col = _MSPAIS_COL_PRIMERA_SEMANA + j
                 valor = pct_por_celda.get((s.anio, s.semana, banda, label))
                 celda_valor = ws.cell(row=fila, column=col, value=valor)
                 celda_valor.number_format = "0.0%"
+                celda_valor.font = normal
+                _pintar_vs_universal(
+                    celda_valor, valor, label, referencia_por_celda[(s.anio, s.semana, banda)],
+                    tamano,
+                )
             fila += 1
 
         celda_banda = ws.cell(row=fila_inicio_banda, column=_MSPAIS_COL_BANDA, value=f"Streams\n(%)\nTOP {banda}")
@@ -314,10 +603,31 @@ def _escribir_pagina_pais(ws, country_code: str) -> None:
         )
         celda_banda.font = negrita
         celda_banda.alignment = centrado
+
+        # Cuadrícula de este bloque de banda: la columna de la banda, la de
+        # los sellos y todas las semanas. La fila en blanco que va después
+        # queda sin borde, para que se siga viendo la separación entre
+        # bandas.
+        _cuadricular(
+            ws, fila_inicio_banda, fila - 1,
+            _MSPAIS_COL_BANDA, max(ultima_columna, _MSPAIS_COL_LABEL), borde,
+        )
+        for r in range(fila_inicio_banda, fila):
+            ws.row_dimensions[r].height = config.MS_ALTO_FILA
+
         fila += 1  # fila en blanco separadora entre bandas, igual que la plantilla real
 
-    ws.column_dimensions[get_column_letter(_MSPAIS_COL_BANDA)].width = 12
-    ws.column_dimensions[get_column_letter(_MSPAIS_COL_LABEL)].width = 14
+    # Los dos encabezados de arriba (fecha y n° de semana) también van
+    # dentro de la cuadrícula.
+    _cuadricular(
+        ws, _MSPAIS_FILA_FECHA, _MSPAIS_FILA_SEMANA,
+        _MSPAIS_COL_LABEL, max(ultima_columna, _MSPAIS_COL_LABEL), borde,
+    )
+    ws.row_dimensions[_MSPAIS_FILA_FECHA].height = config.MS_ALTO_FILA
+    ws.row_dimensions[_MSPAIS_FILA_SEMANA].height = config.MS_ALTO_FILA
+
+    ws.column_dimensions[get_column_letter(_MSPAIS_COL_BANDA)].width = 14
+    ws.column_dimensions[get_column_letter(_MSPAIS_COL_LABEL)].width = 16
 
     ws.freeze_panes = ws.cell(row=_MSPAIS_FILA_PRIMER_DATO, column=_MSPAIS_COL_PRIMERA_SEMANA).coordinate
 
@@ -333,18 +643,38 @@ def generar_reporte(
     """
     if guardar_en_historico:
         history.append_semana_ms(df_semana)
+        # Alimenta la cuadrícula semanal de las pestañas por país. Va junto
+        # a append_semana_ms (mismo reporte, misma corrida) para que las dos
+        # tablas avancen a la par.
+        history.append_semana_ms_bandas(df_semana)
 
     fecha = pd.Timestamp(df_semana["chart_date"].unique()[0])
     anio_actual = fecha.year
 
-    todo_el_historico = history.cargar_ms_label_weekly()
-    hasta_semana = int(todo_el_historico.loc[todo_el_historico["anio"] == anio_actual, "semana"].max())
+    # Hasta qué semana del año en curso llega el YTD. Se mira la fuente más
+    # completa de las dos: el histórico de porcentajes por banda llega más
+    # lejos que el de streams crudos (ver calcular_ytd_por_pais), y si nos
+    # quedáramos con el de streams el reporte diría "a Sem 33" pero
+    # compararía solo hasta la 24.
+    semanas_max = []
+    for cargar in (history.cargar_ms_label_weekly, history.cargar_ms_band_label_weekly):
+        df = cargar()
+        del_anio = df.loc[df["anio"] == anio_actual, "semana"] if not df.empty else None
+        if del_anio is not None and not del_anio.empty:
+            semanas_max.append(int(del_anio.max()))
+    hasta_semana = max(semanas_max) if semanas_max else 0
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        # Los dos históricos se leen UNA vez y se pasan a todo lo que los
+        # necesita (17 países x 2 hojas). Ver la nota en calcular_ytd_por_pais.
+        streams = history.cargar_ms_label_weekly()
+        bandas = history.cargar_ms_band_label_weekly()
+
         ws_resumen = writer.book.create_sheet(config.MS_SHEET_PORCENTAJE)
-        _escribir_resumen_pct(ws_resumen, anio_actual, hasta_semana)
+        _escribir_resumen_pct(ws_resumen, anio_actual, hasta_semana,
+                              streams=streams, bandas=bandas, fecha=fecha)
         for country_code in config.PAISES_MS:
             ws_pais = writer.book.create_sheet(country_code)
-            _escribir_pagina_pais(ws_pais, country_code)
+            _escribir_pagina_pais(ws_pais, country_code, bandas=bandas)
 
     return output_path

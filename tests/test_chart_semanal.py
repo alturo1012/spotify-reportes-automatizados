@@ -3,6 +3,8 @@ tocan data/history/universal_data.db de verdad).
 
 Corre con: pytest tests/test_chart_semanal.py -v
 """
+import datetime
+
 import openpyxl
 import pandas as pd
 import pytest
@@ -329,9 +331,11 @@ def test_resumen_total_incluye_el_listado_de_canciones_debajo_de_la_serie_histor
     # Con una sola semana histórica, la serie ocupa la fila 7; el listado
     # empieza 2 filas en blanco después (filas 8-9), título en la fila 10,
     # encabezados en 11/12, primera canción en la 13.
-    assert ws.cell(row=10, column=1).value == "Week Ending - 18 jun, 2026"
-    assert ws.cell(row=11, column=1).value == "Artist/Título"
-    assert ws.cell(row=11, column=3).value == "Región"
+    # Título en B, fecha en C, región en D: como el informe oficial.
+    assert ws.cell(row=10, column=2).value == "Week Ending - 18 jun, 2026"
+    assert ws.cell(row=11, column=2).value == "Artist/Título"
+    assert ws.cell(row=11, column=3).value == "Fecha Lzto"
+    assert ws.cell(row=11, column=4).value == "Región"
     assert ws.cell(row=11, column=5).value == "COLOMBIA"
     assert [ws.cell(row=12, column=c).value for c in range(5, 10)] == [10, 30, 50, 100, 200]
     # columnas finales sin nombre en la plantilla original -> las nombramos.
@@ -341,8 +345,8 @@ def test_resumen_total_incluye_el_listado_de_canciones_debajo_de_la_serie_histor
     assert ws.cell(row=11, column=col_paises).value == "N° Países"
     assert ws.cell(row=11, column=col_suma).value == "Suma Posiciones"
 
-    assert ws.cell(row=13, column=1).value == "x / a"
-    assert ws.cell(row=13, column=3).value == "Latin"
+    assert ws.cell(row=13, column=2).value == "x / a"
+    assert ws.cell(row=13, column=4).value == "Latin"
     assert ws.cell(row=13, column=5).value == 1  # CO, banda 10
     assert ws.cell(row=13, column=col_paises).value == 1
     assert ws.cell(row=13, column=col_suma).value == 1
@@ -494,15 +498,17 @@ def test_listado_canciones_incluye_fecha_de_lanzamiento_con_cliente_de_prueba(tm
     wb = openpyxl.load_workbook(salida)
     ws = wb[config.CHART_SHEET_RESUMEN]
 
-    # La fecha va en la columna B (_COL_MES), entre "Artist/Título" (A) y
-    # "Región" (C) -- así lo pidió el usuario mostrando la plantilla real.
-    # Importante: no debe correr los bloques de país (siguen empezando en la
-    # columna 5, alineados con la serie histórica de arriba).
-    assert ws.cell(row=11, column=2).value == "Fecha Lzto"
-    assert ws.cell(row=13, column=2).value == "2020-03-15"
-    assert ws.cell(row=11, column=1).value == "Artist/Título"
-    assert ws.cell(row=11, column=3).value == "Región"
-    assert ws.cell(row=13, column=3).value == "Latin"
+    # Como el informe oficial: título en B, fecha en C, región en D. Los
+    # bloques de país siguen empezando en la columna 5 (E), alineados con la
+    # serie histórica de arriba.
+    assert ws.cell(row=11, column=2).value == "Artist/Título"
+    assert ws.cell(row=11, column=3).value == "Fecha Lzto"
+    assert ws.cell(row=11, column=4).value == "Región"
+    assert ws.cell(row=13, column=4).value == "Latin"
+    # La fecha es una fecha de Excel de verdad, con el formato del oficial.
+    celda_fecha = ws.cell(row=13, column=3)
+    assert celda_fecha.value.date() == datetime.date(2020, 3, 15)
+    assert celda_fecha.number_format == chart_semanal.FORMATO_FECHA_LANZAMIENTO
 
 
 def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypatch):
@@ -530,5 +536,382 @@ def test_generar_reporte_sin_credenciales_de_spotify_no_rompe(tmp_path, monkeypa
 
     wb = openpyxl.load_workbook(salida)
     ws = wb[config.CHART_SHEET_RESUMEN]
-    assert ws.cell(row=11, column=2).value == "Fecha Lzto"
-    assert ws.cell(row=13, column=2).value is None
+    assert ws.cell(row=11, column=3).value == "Fecha Lzto"
+    assert ws.cell(row=13, column=3).value is None
+
+
+# --- semáforo de la posición en el listado de canciones (reunión 14/09/2026) ---
+
+def test_pintar_posicion_usa_el_color_de_cada_banda():
+    # Verde el Top 10, amarillo el 30 y el 50, rojo el 100 y el 200.
+    class _Celda:
+        fill = None
+        font = None
+
+    esperado = {
+        10: config.COLOR_SEMAFORO_VERDE,
+        30: config.COLOR_SEMAFORO_AMARILLO,
+        50: config.COLOR_SEMAFORO_AMARILLO,
+        100: config.COLOR_SEMAFORO_ROJO,
+        200: config.COLOR_SEMAFORO_ROJO,
+    }
+    for banda in config.BANDAS_CHART:
+        celda = _Celda()
+        chart_semanal._pintar_posicion(celda, banda)
+        assert str(celda.fill.start_color.rgb)[-6:] == esperado[banda], banda
+
+
+def test_listado_de_canciones_pinta_la_posicion_segun_su_banda(tmp_path):
+    # Tres canciones que caen en tres bandas distintas del mismo país, para
+    # ver los tres colores en la hoja generada.
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO", "CO", "CO"],
+        "chart_date": pd.to_datetime(["2026-06-18"] * 3),
+        "position": [3, 45, 150],          # banda 10, banda 50, banda 200
+        "artist": ["a", "b", "c"],
+        "song_name": ["x", "y", "z"],
+        "stream_count": [3_000_000, 2_000_000, 1_000_000],
+        "label_group": ["Universal"] * 3,
+        "label_name": ["UMG"] * 3,
+        "region": ["Latin"] * 3,
+    })
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    ws = openpyxl.load_workbook(salida)[config.CHART_SHEET_RESUMEN]
+
+    def color(celda):
+        if celda.fill is None or celda.fill.fill_type is None:
+            return None
+        return str(getattr(celda.fill.start_color, "rgb", ""))[-6:]
+
+    # El bloque de Colombia empieza en la columna 5; una columna por banda.
+    col_top10, col_top50, col_top200 = 5, 7, 9
+    # Las canciones salen ordenadas por posición (todas en un solo país), así
+    # que la primera fila del listado (13) es la posición 3.
+    assert ws.cell(row=13, column=col_top10).value == 3
+    assert color(ws.cell(row=13, column=col_top10)) == config.COLOR_SEMAFORO_VERDE
+    assert ws.cell(row=14, column=col_top50).value == 45
+    assert color(ws.cell(row=14, column=col_top50)) == config.COLOR_SEMAFORO_AMARILLO
+    assert ws.cell(row=15, column=col_top200).value == 150
+    assert color(ws.cell(row=15, column=col_top200)) == config.COLOR_SEMAFORO_ROJO
+    # Una celda vacía del mismo bloque no se pinta.
+    assert color(ws.cell(row=13, column=col_top50)) is None
+
+
+# --- cuadrícula del Chart Semanal (reunión 14/09/2026) ---
+
+def _tiene_todos_los_bordes(celda) -> bool:
+    lados = (celda.border.left, celda.border.right, celda.border.top, celda.border.bottom)
+    return all(lado is not None and lado.style for lado in lados)
+
+
+def test_bordes_de_resumen_total_como_el_oficial_y_detalle_en_cuadricula(tmp_path):
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO",
+         "banda": 10, "conteo_universal": 1},
+    ]).to_csv(chart_csv, index=False)
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"],
+        "chart_date": pd.to_datetime(["2026-06-18"]),
+        "position": [1], "artist": ["a"], "song_name": ["x"],
+        "stream_count": [1_000_000], "label_group": ["Universal"],
+        "label_name": ["UMG"], "region": ["Latin"],
+    })
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb[config.CHART_SHEET_RESUMEN]
+
+    def estilo(c, lado):
+        s = getattr(c.border, lado)
+        return s.style if s is not None else None
+
+    # SERIE: como el informe oficial, cada país enmarcado por una línea a la
+    # izquierda de su primera columna (E) y otra a la derecha de la última
+    # (I); adentro, sin bordes. Revisión del 21/09/2026.
+    for fila in (6, 7, 8):
+        assert estilo(ws.cell(row=fila, column=5), "left") == "thin", fila
+        assert estilo(ws.cell(row=fila, column=9), "right") == "thin", fila
+        interior = ws.cell(row=fila, column=7)
+        assert all(estilo(interior, l) is None for l in ("left", "right", "top", "bottom")), fila
+    # tampoco arriba/abajo de las celdas de datos
+    assert estilo(ws.cell(row=7, column=5), "top") is None
+    assert estilo(ws.cell(row=7, column=5), "bottom") is None
+    # las columnas fijas (año, mes, semana) y la separadora, sin bordes
+    for col in (1, 2, 3, 4, 10):
+        c = ws.cell(row=7, column=col)
+        assert all(estilo(c, l) is None for l in ("left", "right", "top", "bottom")), col
+
+    # LISTADO: las celdas de posición de cada país en cuadrícula punteada
+    # (también las vacías); título, fecha y región sin bordes.
+    fila_titulo = next(r for r in range(1, ws.max_row + 1)
+                       if str(ws.cell(row=r, column=2).value or "").startswith("Week Ending"))
+    primera = fila_titulo + 3
+    for col in (5, 7, 9):
+        c = ws.cell(row=primera, column=col)
+        assert all(estilo(c, l) == "dotted" for l in ("left", "right", "top", "bottom")), col
+    for col in (2, 3, 4):
+        c = ws.cell(row=primera, column=col)
+        assert all(estilo(c, l) is None for l in ("left", "right", "top", "bottom")), col
+    # encabezado del listado: el país enmarcado a izquierda y derecha
+    assert estilo(ws.cell(row=fila_titulo + 2, column=5), "left") == "thin"
+    assert estilo(ws.cell(row=fila_titulo + 2, column=9), "right") == "thin"
+
+    # Detalle Tracks: sigue en cuadrícula completa.
+    det = wb[config.CHART_SHEET_DETALLE]
+    for fila in (2, 3):
+        for col in (1, 2):
+            assert _tiene_todos_los_bordes(det.cell(row=fila, column=col)), (fila, col)
+
+
+# --- detalle de productos: solo Universal, una línea por track (16/09/2026) ---
+
+def _semana_con_varios_sellos(chart_date="2026-09-10"):
+    """CO: 2 tracks Universal en el TOP 10 y 3 de otros sellos."""
+    filas = []
+    for pos, sello, nombre in [
+        (1, "Sony", "Ajena A"), (2, "Universal", "Uni A"), (3, "Warner", "Ajena B"),
+        (4, "Universal", "Uni B"), (5, "Indies", "Ajena C"),
+    ]:
+        filas.append({
+            "country_code": "CO", "chart_date": pd.Timestamp(chart_date), "position": pos,
+            "artist": "Artista", "song_name": nombre, "stream_count": 1_000_000,
+            "label_group": sello, "label_name": sello, "region": "Latin", "ISRC": f"I{pos}",
+        })
+    return pd.DataFrame(filas)
+
+
+def test_el_listado_solo_trae_productos_universal(tmp_path):
+    # Comentario del revisor: "únicamente deben incluirse los productos que
+    # estén marcados como Universal". En el TOP 10 de CO hay 5 tracks pero
+    # solo 2 son de Universal.
+    listado = chart_semanal.construir_listado_canciones(_semana_con_varios_sellos())
+
+    assert len(listado) == 2
+    assert sorted(listado["cancion"]) == ["Uni A / Artista", "Uni B / Artista"]
+
+
+def test_el_listado_cuenta_una_sola_vez_el_track_partido_entre_sellos(tmp_path):
+    # El track llega en dos filas (market share compartido): una sola línea,
+    # y "Suma Posiciones" no se duplica.
+    filas = []
+    for streams in (300_000.0, 700_000.0):
+        filas.append({
+            "country_code": "CO", "chart_date": pd.Timestamp("2026-09-10"), "position": 7,
+            "artist": "Artista", "song_name": "Partida", "stream_count": streams,
+            "label_group": "Universal", "label_name": "UMG", "region": "Latin", "ISRC": "I7",
+        })
+    listado = chart_semanal.construir_listado_canciones(pd.DataFrame(filas))
+
+    assert len(listado) == 1
+    assert listado["paises_presente"].iloc[0] == 1
+    assert listado["suma_posiciones"].iloc[0] == 7      # no 14
+    assert listado["CO_top10"].iloc[0] == 7
+
+
+def test_el_listado_deja_fuera_el_track_del_que_no_se_sabe_el_dueno(tmp_path):
+    # Sin un copyright que diga de quién es el producto, el track no le
+    # suma a ningún sello (ver load_data.dueno_del_track).
+    filas = []
+    for sello in ("Universal", "Sony"):
+        filas.append({
+            "country_code": "CO", "chart_date": pd.Timestamp("2026-09-10"), "position": 8,
+            "artist": "Artista", "song_name": "Empatada", "stream_count": 500_000.0,
+            "label_group": sello, "label_name": sello, "region": "Latin", "ISRC": "I8",
+        })
+    listado = chart_semanal.construir_listado_canciones(pd.DataFrame(filas))
+    assert listado.empty
+
+
+def test_el_detalle_cuadra_con_la_serie_historica(tmp_path):
+    # Es la comprobación que hizo el revisor: cuántos tracks muestra el
+    # detalle en cada banda tiene que ser el número de la serie de arriba.
+    chart_csv = _csv_vacio(tmp_path, "seed_chart.csv",
+                           ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+
+    df_semana = _semana_con_varios_sellos()
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+
+    ws = openpyxl.load_workbook(salida)[config.CHART_SHEET_RESUMEN]
+    serie_top10 = ws.cell(row=7, column=5).value          # CO, banda 10
+    fila_tit = next(r for r in range(1, ws.max_row + 1)
+                    if str(ws.cell(row=r, column=2).value or "").startswith("Week Ending"))
+    en_detalle = sum(1 for r in range(fila_tit + 3, ws.max_row + 1)
+                     if isinstance(ws.cell(row=r, column=5).value, int))
+    assert serie_top10 == 2
+    assert en_detalle == serie_top10
+
+
+# --- formato igual al informe oficial (revisión del 21/09/2026) ---
+
+def _reporte_con_una_semana(tmp_path):
+    chart_csv = tmp_path / "seed_chart.csv"
+    pd.DataFrame([
+        {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO", "banda": 10, "conteo_universal": c}
+        for c in (1,)
+    ] + [
+        {"anio": 2026, "semana": 1, "mes": "ENERO", "country_code": "CO", "banda": b, "conteo_universal": v}
+        for b, v in ((30, 9), (50, 20))       # 9 = justo el objetivo; 20 = por encima
+    ]).to_csv(chart_csv, index=False)
+    ms_csv = _csv_vacio(tmp_path, "seed_ms.csv",
+                        ["anio", "semana", "country_code", "label_group", "streams_top200", "chart_date"])
+    history.seed_historico(chart_csv, ms_csv)
+    df_semana = _semana_con_varios_sellos()
+    salida = tmp_path / "reporte.xlsx"
+    chart_semanal.generar_reporte(df_semana, salida)
+    return openpyxl.load_workbook(salida)
+
+
+def test_todas_las_celdas_van_en_calibri(tmp_path):
+    # Sin nombre de fuente, Excel usa la fuente por defecto de quien abre el
+    # archivo y el reporte se ve distinto al oficial.
+    wb = _reporte_con_una_semana(tmp_path)
+    for ws in wb.worksheets:
+        sin_calibri = [c.coordinate for fila in ws.iter_rows() for c in fila
+                       if c.value is not None and type(c).__name__ != "MergedCell"
+                       and c.font.name != "Calibri"]
+        assert sin_calibri == [], (ws.title, sin_calibri[:5])
+
+
+def test_el_semaforo_de_la_serie_pinta_fondo_y_texto(tmp_path):
+    ws = _reporte_con_una_semana(tmp_path)[config.CHART_SHEET_RESUMEN]
+    def texto(c): return str(c.font.color.rgb)[-6:]
+    rojo, amarillo, verde = (ws.cell(row=7, column=c) for c in (5, 6, 7))   # CO 10/30/50
+    assert texto(rojo) == config.COLOR_TEXTO_SEMAFORO_ROJO          # 1 < 3
+    assert texto(amarillo) == config.COLOR_TEXTO_SEMAFORO_AMARILLO  # 9 == 9
+    assert texto(verde) == config.COLOR_TEXTO_SEMAFORO_VERDE        # 20 > 15
+
+
+def test_columnas_fijas_con_los_anchos_y_colores_del_oficial(tmp_path):
+    ws = _reporte_con_una_semana(tmp_path)[config.CHART_SHEET_RESUMEN]
+    anchos = {c: round(ws.column_dimensions[c].width, 1) for c in "ABCD"}
+    assert anchos == {"A": 4.9, "B": 29.6, "C": 10.6, "D": 7.4}
+    semana = ws.cell(row=7, column=3)
+    assert str(semana.fill.start_color.rgb)[-6:] == chart_semanal.COLOR_COLUMNA_SEMANA
+    assert ws.cell(row=7, column=1).font.sz == chart_semanal.TAMANO_FUENTE_ANIO
+
+
+# --------------------------------------------------------------------------
+# Orden del listado de canciones (pedido del área, correo del 01/10/2026):
+# "por TOP de mayor número de tracks a menor, comenzando por el top 10,
+# luego top 30, y así sucesivamente".
+# --------------------------------------------------------------------------
+
+def _semana_de_prueba(filas):
+    """`filas` = [(cancion, pais, posicion), ...]"""
+    return pd.DataFrame({
+        "country_code": [p for _, p, _ in filas],
+        "chart_date": pd.to_datetime(["2026-09-24"] * len(filas)),
+        "position": [pos for _, _, pos in filas],
+        "artist": ["artista"] * len(filas),
+        "song_name": [c for c, _, _ in filas],
+        "stream_count": [1_000_000] * len(filas),
+        "label_group": ["Universal"] * len(filas),
+        "label_name": ["UMG"] * len(filas),
+        "region": ["Latin"] * len(filas),
+    })
+
+
+def test_el_listado_cuenta_los_paises_de_cada_banda_y_son_excluyentes(tmp_path):
+    # Una canción en el Top 10 de dos países, en el Top 30 de uno y en el
+    # Top 200 de otro: cada país suma a UNA sola banda.
+    df = _semana_de_prueba([
+        ("cancion", "CO", 1), ("cancion", "PE", 5),
+        ("cancion", "EC", 25), ("cancion", "MX", 150),
+    ])
+
+    listado = chart_semanal.construir_listado_canciones(df)
+
+    fila = listado.iloc[0]
+    assert fila["cuenta_10"] == 2
+    assert fila["cuenta_30"] == 1
+    assert fila["cuenta_50"] == 0
+    assert fila["cuenta_100"] == 0
+    assert fila["cuenta_200"] == 1
+    # Las cinco cuentas suman la cantidad de países donde aparece.
+    assert sum(fila[f"cuenta_{b}"] for b in config.BANDAS_CHART) == fila["paises_presente"]
+
+
+def test_manda_el_top_10_aunque_la_otra_cancion_este_en_mas_paises(tmp_path):
+    """El caso que reportó el área: una canción en el Top 10 de tres países
+    va ARRIBA de otra que está en diez países pero ninguno en el Top 10."""
+    df = _semana_de_prueba(
+        [("top10", p, 3) for p in ["CO", "PE", "EC"]]
+        + [("muchos_paises", p, 150) for p in
+           ["CO", "PE", "EC", "MX", "AR", "CL", "BR", "GT", "HN", "NI"]]
+    )
+
+    listado = chart_semanal.construir_listado_canciones(df)
+
+    assert list(listado["cancion"].str.split(" / ").str[0]) == ["top10", "muchos_paises"]
+    # Y con el criterio viejo (más países primero) habría salido al revés.
+    assert listado.iloc[0]["paises_presente"] < listado.iloc[1]["paises_presente"]
+
+
+def test_empatados_en_top_10_desempata_el_top_30_y_despues_el_50(tmp_path):
+    df = _semana_de_prueba([
+        ("a", "CO", 1), ("a", "PE", 25), ("a", "EC", 26),
+        ("b", "CO", 2), ("b", "PE", 26), ("b", "EC", 45),
+        ("c", "CO", 3), ("c", "PE", 40), ("c", "EC", 45),
+    ])
+
+    listado = chart_semanal.construir_listado_canciones(df)
+
+    # Las tres tienen cuenta_10 = 1. "a" tiene dos en el Top 30, "b" una,
+    # "c" ninguna; entre "b" y "c" desempata el Top 50.
+    assert list(listado["cancion"].str.split(" / ").str[0]) == ["a", "b", "c"]
+
+
+def test_el_ultimo_desempate_es_la_fecha_de_lanzamiento_mas_antigua(tmp_path):
+    listado = pd.DataFrame({
+        "cancion": ["nueva", "vieja", "sin_fecha"],
+        "cuenta_10": [1, 1, 1], "cuenta_30": [0, 0, 0], "cuenta_50": [0, 0, 0],
+        "cuenta_100": [0, 0, 0], "cuenta_200": [0, 0, 0],
+        "fecha_lanzamiento": ["2026-01-01", "2019-05-20", None],
+    })
+
+    ordenado = chart_semanal.ordenar_listado(listado)
+
+    # La más antigua primero y la que no tiene fecha al final (una fecha que
+    # no se pudo resolver no debe adelantar a la canción).
+    assert list(ordenado["cancion"]) == ["vieja", "nueva", "sin_fecha"]
+    assert "_fecha_orden" not in ordenado.columns
+
+
+def test_las_fechas_incompletas_de_spotify_no_mandan_la_cancion_al_final(tmp_path):
+    """Spotify devuelve "1995" o "2006-03" cuando no sabe el día o el mes.
+
+    `pd.to_datetime` deduce el formato de la primera fila y convierte en NaT
+    todo lo que no coincida, así que esas canciones terminaban al final de
+    su grupo aunque sí tuvieran fecha. Pasó de verdad en la semana 39:
+    "Zombie" (1994) salía en el puesto 241, el último, en vez del 157.
+    """
+    listado = pd.DataFrame({
+        "cancion": ["dia_completo", "solo_anio", "anio_y_mes", "sin_fecha"],
+        "cuenta_10": [1, 1, 1, 1], "cuenta_30": [0, 0, 0, 0], "cuenta_50": [0, 0, 0, 0],
+        "cuenta_100": [0, 0, 0, 0], "cuenta_200": [0, 0, 0, 0],
+        # La primera es una fecha completa a propósito: es la que pandas
+        # tomaba como formato de toda la columna.
+        "fecha_lanzamiento": ["2026-05-21", "1995", "2006-03", None],
+    })
+
+    ordenado = chart_semanal.ordenar_listado(listado)
+
+    assert list(ordenado["cancion"]) == ["solo_anio", "anio_y_mes", "dia_completo", "sin_fecha"]

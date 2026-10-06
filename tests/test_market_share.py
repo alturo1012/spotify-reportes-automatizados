@@ -6,6 +6,7 @@ Corre con: pytest tests/test_market_share.py -v
 import openpyxl
 import pandas as pd
 import pytest
+from openpyxl.utils import get_column_letter
 
 from src import config, history, market_share
 
@@ -104,7 +105,7 @@ def test_pct_ytd_coincide_con_reporte_oficial_real_semana_24(tmp_path):
     # países x 7 sellos x 2 años = 238 valores) se hizo aparte y coincidió
     # exactamente (diferencia máxima ~1e-16, puro redondeo de floats); este
     # test deja 3 de esos casos reales fijos como regresión rápida.
-    history.seed_historico()  # usa los CSV reales por defecto (SEED_CHART_CSV/SEED_MS_CSV)
+    history.seed_historico()  # sin argumentos = los tres CSV reales de data/history/seed/
 
     casos_reales = [
         # (pais, label_group, pct_YTD_2026, pct_YTD_2025)
@@ -163,7 +164,9 @@ def test_escribir_resumen_pct_arma_bloques_por_pais_con_freeze_panes(tmp_path):
     ws = wb[config.MS_SHEET_PORCENTAJE]
 
     assert ws.freeze_panes == "A4"
-    assert ws.cell(row=2, column=2).value == "TOP 200 WEEKLY MARKET SHARE"
+    # El banner arranca en el segundo bloque (columna G): en el rincón de la
+    # izquierda van la semana y la fecha de corte.
+    assert ws.cell(row=2, column=7).value == "TOP 200 WEEKLY MARKET SHARE"
     assert ws.cell(row=4, column=2).value == "COLOMBIA"  # bloque 1 -> columna B
     assert ws.cell(row=4, column=7).value == "PERU"  # bloque 2 -> columna G
     assert ws.cell(row=4, column=17).value == "DOMINICANA"  # bloque 4 -> columna Q (orden nuevo)
@@ -185,7 +188,8 @@ def _csv_vacio_market(tmp_path, nombre, columnas):
 
 def _tracks_semana_co(chart_date, filas):
     """filas: lista de (position, label_group, stream_count) -- arma un
-    df_semana mínimo de Colombia listo para history.append_semana_tracks."""
+    df_semana mínimo de Colombia listo para history.append_semana_tracks o
+    history.append_semana_ms_bandas."""
     registros = [
         {
             "country_code": "CO", "chart_date": pd.Timestamp(chart_date),
@@ -204,7 +208,7 @@ def test_calcular_streams_pct_grid_calcula_pct_por_banda_y_sello(tmp_path):
     df_semana = _tracks_semana_co("2026-06-18", [
         (1, "Universal", 100), (2, "Sony", 100), (15, "Universal", 50), (25, "Sony", 200),
     ])
-    history.append_semana_tracks(df_semana)
+    history.append_semana_ms_bandas(df_semana)
 
     grid = market_share.calcular_streams_pct_grid("CO")
     pct = grid.set_index(["banda", "label_group"])["pct"]
@@ -231,10 +235,11 @@ def test_escribir_pagina_pais_arma_cuadricula_semanal_con_freeze_panes(tmp_path)
     # en la esquina de la primera celda de dato).
     df_semana1 = _tracks_semana_co("2026-06-11", [(1, "Universal", 100), (2, "Sony", 100)])
     df_semana2 = _tracks_semana_co("2026-06-18", [(1, "Universal", 30), (2, "Sony", 70)])
-    history.append_semana_tracks(df_semana1)
-    history.append_semana_tracks(df_semana2)
+    history.append_semana_ms_bandas(df_semana1)
 
     salida = tmp_path / "reporte.xlsx"
+    # La segunda semana la guarda el propio generar_reporte (así se usa de
+    # verdad: cargar la fuente de la semana genera el reporte y la agrega).
     market_share.generar_reporte(df_semana2, salida)
 
     wb = openpyxl.load_workbook(salida)
@@ -265,16 +270,377 @@ def test_escribir_pagina_pais_arma_cuadricula_semanal_con_freeze_panes(tmp_path)
     assert ws.cell(row=4, column=4).value == pytest.approx(pct[(2, 10, "Universal")])
 
 
-def test_escribir_pagina_pais_sin_historico_de_tracks_no_falla(tmp_path):
-    # Sin ninguna semana en chart_track_weekly todavía (fuente recién
-    # cargada por primera vez después de este ajuste): la pestaña debe salir
-    # con encabezados pero sin columnas de semana, sin reventar.
+def test_escribir_pagina_pais_sin_historico_no_falla(tmp_path):
+    # Sin ninguna semana en ms_band_label_weekly y sin guardar la actual
+    # (histórico recién creado, base vacía): la pestaña debe salir con
+    # encabezados pero sin columnas de semana, sin reventar.
+    _sembrar_dos_anios(tmp_path)
     df_semana = _fuente_minima_ms(tmp_path)
     salida = tmp_path / "reporte.xlsx"
-    market_share.generar_reporte(df_semana, salida)
+    market_share.generar_reporte(df_semana, salida, guardar_en_historico=False)
 
     wb = openpyxl.load_workbook(salida)
     ws = wb["CO"]
     assert ws.freeze_panes == "C4"
     assert ws.cell(row=4, column=2).value == "Universal"
     assert ws.cell(row=4, column=3).value is None
+
+
+def test_generar_reporte_agrega_la_semana_a_la_cuadricula_por_pais(tmp_path):
+    # Antes, la cuadrícula por país solo se llenaba si la semana estaba en
+    # chart_track_weekly, que alimentaba chart_semanal (otro reporte). Ahora
+    # el propio Reporte_MS la guarda: generar el reporte deja la semana
+    # cargada visible en la pestaña del país, sin depender del otro reporte.
+    _sembrar_dos_anios(tmp_path)
+    df_semana = _fuente_minima_ms(tmp_path)
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(df_semana, salida)
+
+    guardado = history.cargar_ms_band_label_weekly()
+    assert not guardado.empty
+    assert set(guardado["banda"].unique()) == set(config.BANDAS_MARKET_SHARE)
+    assert set(guardado["label_group"].unique()) == set(config.LABEL_GROUPS_MS)
+
+    wb = openpyxl.load_workbook(salida)
+    ws = wb["CO"]
+    assert ws.cell(row=2, column=3).value.date().isoformat() == "2026-06-18"
+    assert ws.cell(row=4, column=3).value == pytest.approx(0.5)  # Universal 1 de 2 tracks, mismos streams
+
+
+# --- semáforo del resumen "% Market Share" (Ajuste 11) ---
+
+# Primera columna con datos de la cuadrícula por país (A=banda, B=sello, C+=semanas).
+_MSPAIS_PRIMERA_COL_DATO = 3
+
+
+def _color_de(celda):
+    """Devuelve 'ROJO' / 'VERDE' / 'AMARILLO' / None según el relleno."""
+    if not celda.fill or celda.fill.fill_type is None:
+        return None
+    rgb = str(getattr(celda.fill.start_color, "rgb", ""))[-6:]
+    return {
+        config.COLOR_SEMAFORO_ROJO: "ROJO",
+        config.COLOR_SEMAFORO_VERDE: "VERDE",
+        config.COLOR_SEMAFORO_AMARILLO: "AMARILLO",
+    }.get(rgb)
+
+
+def _sembrar_bloque_co(tmp_path, filas_ms):
+    chart_csv = _csv_vacio_market(tmp_path, "seed_chart.csv",
+                                  ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame(filas_ms).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+
+
+def _celdas_co(salida):
+    """(fila del sello) -> (celda YTD actual, celda YTD anterior, celda G/L)
+    del bloque de Colombia, que es el primero: filas 7-13, columnas C/D/E."""
+    ws = openpyxl.load_workbook(salida)[config.MS_SHEET_PORCENTAJE]
+    celdas = {}
+    for k, label in enumerate(config.ORDEN_LABELS_MS_RESUMEN):
+        r = 7 + k
+        celdas[label] = (ws.cell(row=r, column=3), ws.cell(row=r, column=4), ws.cell(row=r, column=5))
+    return celdas
+
+
+def test_semaforo_pinta_de_rojo_a_los_sellos_que_le_ganan_a_universal(tmp_path):
+    # Universal 20%, Sony 50% y Warner 30% le ganan; INgrooves 0% no.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 20.0), ("Sony", 50.0), ("Warner", 30.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    assert _color_de(celdas["Sony"][0]) == "ROJO"      # 50% > 20%
+    assert _color_de(celdas["Warner"][0]) == "ROJO"    # 30% > 20%
+    assert _color_de(celdas["INgrooves"][0]) is None   # 0% no le gana
+    assert _color_de(celdas["Universal"][0]) is None   # no es el máximo -> sin verde
+    # la regla se aplica igual en la columna del año anterior
+    assert _color_de(celdas["Sony"][1]) == "ROJO"
+
+
+def test_semaforo_pinta_de_verde_a_universal_cuando_va_de_primero(tmp_path):
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 80.0), ("Sony", 20.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    assert _color_de(celdas["Universal"][0]) == "VERDE"
+    assert _color_de(celdas["Sony"][0]) is None
+
+
+def test_semaforo_de_la_columna_gl_es_por_signo(tmp_path):
+    # Universal sube (20% -> 60%), Sony baja (80% -> 40%), Warner queda igual.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 60.0, "chart_date": "2026-01-01"},
+        {"anio": 2026, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 40.0, "chart_date": "2026-01-01"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Universal", "streams_top200": 20.0, "chart_date": "2025-01-02"},
+        {"anio": 2025, "semana": 1, "country_code": "CO", "label_group": "Sony", "streams_top200": 80.0, "chart_date": "2025-01-02"},
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    assert _color_de(celdas["Universal"][2]) == "VERDE"     # ganó participación
+    assert _color_de(celdas["Sony"][2]) == "ROJO"           # perdió
+    assert _color_de(celdas["Warner"][2]) == "AMARILLO"     # 0% los dos años -> sin cambio
+
+
+def test_semaforo_no_pinta_verde_en_un_pais_sin_datos(tmp_path):
+    # Con todo en cero, Universal sería "el máximo" por empate técnico; no
+    # debe salir verde, sería engañoso.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "PE", "label_group": "Universal",
+         "streams_top200": 10.0, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)  # Colombia no tiene datos en este histórico
+
+    assert _color_de(celdas["Universal"][0]) is None
+    assert _color_de(celdas["Sony"][0]) is None
+
+
+def test_semaforo_en_la_cuadricula_por_pais(tmp_path):
+    # Misma regla que en el resumen, pero el grupo son los 7 sellos de UNA
+    # banda en UNA semana. Verificado 1:1 contra la pestaña CO real.
+    _sembrar_dos_anios(tmp_path)
+    # Banda 10: Universal 25%, Warner 50% (le gana), Sony 25% (empata, no gana).
+    # Banda 20: Universal 60% -> lidera, va en verde.
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"] * 5,
+        "chart_date": pd.to_datetime(["2026-07-02"] * 5),
+        "position": [1, 2, 3, 15, 16],
+        "label_group": ["Universal", "Warner", "Sony", "Universal", "Warner"],
+        "stream_count": [25, 50, 25, 200, 0],
+    })
+    history.append_semana_ms_bandas(df_semana)
+
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)["CO"]
+    fila = {lab: 4 + k for k, lab in enumerate(config.LABEL_GROUPS_MS)}          # banda 10
+    fila20 = {lab: 12 + k for k, lab in enumerate(config.LABEL_GROUPS_MS)}       # banda 20
+    col = _MSPAIS_PRIMERA_COL_DATO
+
+    assert _color_de(ws.cell(row=fila["Warner"], column=col)) == "ROJO"     # 50% > 25%
+    assert _color_de(ws.cell(row=fila["Sony"], column=col)) is None        # 25% empata, no gana
+    assert _color_de(ws.cell(row=fila["Universal"], column=col)) is None   # no lidera
+    # en la banda 20 Universal sí lidera
+    assert _color_de(ws.cell(row=fila20["Universal"], column=col)) == "VERDE"
+
+
+def test_semaforo_por_pais_no_pinta_semanas_sin_datos(tmp_path):
+    _sembrar_dos_anios(tmp_path)
+    df_semana = pd.DataFrame({
+        "country_code": ["CO"],
+        "chart_date": pd.to_datetime(["2026-07-02"]),
+        "position": [1],
+        "label_group": ["Universal"],
+        "stream_count": [0],  # sin streams: todo el bloque queda en cero
+    })
+    history.append_semana_ms_bandas(df_semana)
+
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)["CO"]
+    # Universal "empata" en cero con todos; no debe salir verde.
+    assert _color_de(ws.cell(row=4, column=_MSPAIS_PRIMERA_COL_DATO)) is None
+
+
+# --- las dos formas de calcular el YTD (Ajuste 12) ---
+
+def _sembrar_bandas(tmp_path, filas):
+    """Siembra solo ms_band_label_weekly (el histórico de % por banda)."""
+    bandas_csv = tmp_path / "seed_bandas.csv"
+    pd.DataFrame(filas).to_csv(bandas_csv, index=False)
+    history.seed_historico(ms_bandas_csv=bandas_csv)
+
+
+def test_ytd_usa_la_formula_exacta_cuando_estan_todos_los_streams(tmp_path):
+    # Con los streams crudos completos de las semanas 1-2 en ambos años, el
+    # resultado tiene que seguir siendo la suma ponderada de siempre, aunque
+    # exista el histórico de porcentajes.
+    _sembrar_dos_anios(tmp_path)
+    _sembrar_bandas(tmp_path, [
+        # % semanales que darían OTRO resultado si se usara el promedio,
+        # justamente para notar si se cuela la aproximación.
+        {"anio": 2026, "semana": s, "chart_date": f"2026-01-0{s}", "country_code": "CO",
+         "banda": 200, "label_group": "Universal", "pct_streams": 0.10}
+        for s in (1, 2)
+    ])
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2).set_index("label_group")
+    assert tabla.loc["Universal", "pct_YTD_2026"] == pytest.approx(60 / 80)  # exacta, no 0.10
+
+
+def test_ytd_cae_al_promedio_semanal_cuando_faltan_streams(tmp_path):
+    # Sin streams crudos, pero con el histórico de porcentajes completo: el
+    # YTD sale del promedio del % semanal de la banda 200.
+    _sembrar_bandas(tmp_path, [
+        {"anio": anio, "semana": s, "chart_date": f"{anio}-01-0{s}", "country_code": "CO",
+         "banda": 200, "label_group": lab, "pct_streams": pct}
+        for anio, pcts in ((2026, {"Universal": (0.20, 0.40), "Sony": (0.80, 0.60)}),
+                           (2025, {"Universal": (0.50, 0.50), "Sony": (0.50, 0.50)}))
+        for lab, valores in pcts.items()
+        for s, pct in zip((1, 2), valores)
+    ])
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2).set_index("label_group")
+
+    assert tabla.loc["Universal", "pct_YTD_2026"] == pytest.approx(0.30)  # (0.20+0.40)/2
+    assert tabla.loc["Sony", "pct_YTD_2026"] == pytest.approx(0.70)
+    assert tabla.loc["Universal", "pct_YTD_2025"] == pytest.approx(0.50)
+    assert tabla.loc["Universal", "g_l"] == pytest.approx(0.30 - 0.50)
+
+
+def test_ytd_no_suma_streams_si_hay_un_hueco_en_el_periodo(tmp_path):
+    # Caso real: hay streams de las semanas 1-24 pero faltan las 25-33.
+    # Sumar solo lo que hay daría el share de un subconjunto, no del período
+    # completo -- tiene que usar la aproximación.
+    chart_csv = _csv_vacio_market(tmp_path, "seed_chart.csv",
+                                  ["anio", "semana", "mes", "country_code", "banda", "conteo_universal"])
+    ms_csv = tmp_path / "seed_ms.csv"
+    pd.DataFrame([
+        # solo la semana 1; falta la 2
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-01"}
+        for a in (2025, 2026)
+        for lab, v in (("Universal", 90.0), ("Sony", 10.0))
+    ]).to_csv(ms_csv, index=False)
+    history.seed_historico(chart_csv, ms_csv)
+    _sembrar_bandas(tmp_path, [
+        {"anio": a, "semana": s, "chart_date": f"{a}-01-0{s}", "country_code": "CO",
+         "banda": 200, "label_group": "Universal", "pct_streams": 0.10}
+        for a in (2025, 2026) for s in (1, 2)
+    ])
+
+    tabla = market_share.calcular_ytd_por_pais("CO", 2026, hasta_semana=2).set_index("label_group")
+    # Si hubiera sumado los streams de la semana 1 daría 0.90; con el hueco
+    # usa el promedio del % semanal -> 0.10.
+    assert tabla.loc["Universal", "pct_YTD_2026"] == pytest.approx(0.10)
+
+
+# --- cuadrícula y tamaños (reunión 14/09/2026) ---
+
+def _tiene_todos_los_bordes(celda) -> bool:
+    """True si la celda tiene borde en los cuatro lados.
+
+    OJO con las celdas COMBINADAS (el banner del país, la columna de la
+    banda): Excel las dibuja como una sola celda, y openpyxl guarda el borde
+    solo en el perímetro del rango -- la celda de arriba a la izquierda es la
+    que lo lleva completo, y las demás del rango salen sin borde al releer el
+    archivo aunque en Excel se vea el recuadro. Por eso los tests de abajo
+    revisan la celda inicial de cada rango combinado, no todas.
+    """
+    lados = (celda.border.left, celda.border.right, celda.border.top, celda.border.bottom)
+    return all(lado is not None and lado.style for lado in lados)
+
+
+def test_resumen_pct_cuadricula_cada_tabla_de_pais_y_agranda_las_celdas(tmp_path):
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 20.0), ("Sony", 50.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)[config.MS_SHEET_PORCENTAJE]
+
+    # Bloque de Colombia: banner en la fila 4 (combinado B4:E4), subencabezado
+    # en la 6, sellos en las filas 7-13, columnas B a E.
+    assert _tiene_todos_los_bordes(ws.cell(row=4, column=2))
+    for fila in range(6, 14):
+        for col in range(2, 6):
+            assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col)), (fila, col)
+    # La fila en blanco entre el banner y la tabla queda sin bordes.
+    assert not _tiene_todos_los_bordes(ws.cell(row=5, column=2))
+
+    # Letra y celdas un poco más grandes que el default de Excel (11 / ~15).
+    assert ws.cell(row=7, column=2).font.size == config.MS_FUENTE_TAMANO
+    assert ws.cell(row=7, column=3).font.size == config.MS_FUENTE_TAMANO
+    assert ws.column_dimensions["B"].width == config.MS_ANCHO_COLUMNA
+    assert ws.row_dimensions[7].height == config.MS_ALTO_FILA
+
+
+def test_el_semaforo_del_resumen_conserva_el_tamano_de_letra(tmp_path):
+    # Pintar reemplaza la fuente entera: si no se le pasa el tamaño, la
+    # celda coloreada se vuelve más chica que sus vecinas.
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": lab,
+         "streams_top200": v, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+        for lab, v in (("Universal", 20.0), ("Sony", 50.0))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+    celdas = _celdas_co(salida)
+
+    celda_sony = celdas["Sony"][0]
+    assert _color_de(celda_sony) == "ROJO"
+    assert celda_sony.font.size == config.MS_FUENTE_TAMANO
+
+
+def test_pagina_pais_cuadricula_la_rejilla_y_agranda_las_celdas(tmp_path):
+    _sembrar_bandas(tmp_path, [
+        {"anio": 2026, "semana": 1, "chart_date": "2026-01-01", "country_code": "CO",
+         "banda": banda, "label_group": lab, "pct_streams": pct}
+        for banda in config.BANDAS_MARKET_SHARE
+        for lab, pct in (("Universal", 0.30), ("Sony", 0.70))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(_fuente_minima_ms(tmp_path), salida, guardar_en_historico=False)
+
+    ws = openpyxl.load_workbook(salida)["CO"]
+    col_dato = _MSPAIS_PRIMERA_COL_DATO
+
+    # Encabezados (fecha y semana) y el primer bloque de banda (filas 4-10).
+    for fila in (2, 3):
+        assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col_dato)), fila
+    # La columna A va combinada sobre las 7 filas de la banda: su borde vive
+    # en la celda inicial del rango.
+    assert _tiene_todos_los_bordes(ws.cell(row=4, column=1))
+    for fila in range(4, 11):
+        for col in (2, col_dato):
+            assert _tiene_todos_los_bordes(ws.cell(row=fila, column=col)), (fila, col)
+    # La fila en blanco que separa una banda de la siguiente sigue sin bordes.
+    assert not _tiene_todos_los_bordes(ws.cell(row=11, column=col_dato))
+
+    assert ws.cell(row=4, column=2).font.size == config.MS_FUENTE_TAMANO
+    assert ws.cell(row=4, column=col_dato).font.size == config.MS_FUENTE_TAMANO
+    assert ws.column_dimensions[get_column_letter(col_dato)].width == config.MS_ANCHO_COLUMNA
+    assert ws.row_dimensions[4].height == config.MS_ALTO_FILA
+
+
+def test_resumen_pct_encabeza_con_la_semana_y_la_fecha_de_corte(tmp_path):
+    # Pedido de la reunión del 14/09/2026: donde el archivo original tiene el
+    # logo de Spotify, acá van la semana y la fecha (el logo no).
+    _sembrar_bloque_co(tmp_path, [
+        {"anio": a, "semana": 1, "country_code": "CO", "label_group": "Universal",
+         "streams_top200": 10.0, "chart_date": f"{a}-01-0{d}"}
+        for a, d in ((2026, 1), (2025, 2))
+    ])
+    salida = tmp_path / "reporte.xlsx"
+    market_share.generar_reporte(
+        _fuente_minima_ms(tmp_path, chart_date="2026-08-13"), salida,
+        guardar_en_historico=False,
+    )
+
+    ws = openpyxl.load_workbook(salida)[config.MS_SHEET_PORCENTAJE]
+    assert ws.cell(row=2, column=2).value == "Semana 1"
+    assert ws.cell(row=3, column=2).value == "Week Ending - 13 ago, 2026"
+    # y no se pisan con el banner, que arranca en la columna G
+    assert ws.cell(row=2, column=7).value == "TOP 200 WEEKLY MARKET SHARE"

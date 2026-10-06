@@ -31,7 +31,29 @@ ROOT_DIR = _calcular_root_dir()
 RAW_DIR = ROOT_DIR / "data" / "raw"
 OUTPUT_DIR = ROOT_DIR / "data" / "output"
 
-# Columnas tal cual vienen en la hoja "Consulta1" de la fuente BQ
+# Base de datos EXTERNA de fechas de lanzamiento, traída del proyecto
+# anterior del usuario (la que maneja release_date_management.py). Tiene la
+# tabla `track (uri, release_date)`, donde `uri` es el id de track de
+# Spotify sin el prefijo "spotify:track:".
+#
+# Se consulta ANTES de preguntarle a la API (ver
+# spotify_release_dates.resolver_fechas_lanzamiento): si la fecha ya está
+# ahí, nos ahorramos la llamada. Es OPCIONAL: si el archivo no está, todo
+# sigue funcionando igual, solo que resolviendo todo contra la API.
+#
+# Se abre siempre en modo solo lectura -- es un archivo del usuario, este
+# proyecto no le escribe nada.
+RELEASE_DATE_DB = ROOT_DIR / "data" / "release_date.db"
+
+# Nombres posibles de la hoja de datos dentro del archivo fuente de
+# BigQuery, en orden de preferencia. Venía siempre como "Consulta1", pero
+# desde la semana 36 de 2026 empezó a llegar como "spotify" -- y no hay
+# garantía de cuál va a venir la próxima vez, así que se aceptan las dos
+# (ver load_data.elegir_hoja; la comparación ignora mayúsculas y espacios).
+# Si aparece un nombre nuevo, basta con agregarlo a esta lista.
+HOJAS_FUENTE = ["Consulta1", "spotify"]
+
+# Columnas tal cual vienen en la hoja de datos de la fuente BQ
 SOURCE_COLUMNS = [
     "country",
     "country_alt",
@@ -162,14 +184,26 @@ LABEL_GROUPS_MS = [
 # label_group tal cual viene de la fuente BQ trae 9 valores distintos, pero
 # el reporte final agrupa a 7. Som Livre y Altafonte se cuentan como Indies
 # (confirmado con el usuario y con el conteo de valores reales de la fuente).
+# Som Livre y Altafonte van dentro de SONY, no de Indies.
+#
+# Estaban como "Indies" y la revisión del 16/09/2026 pidió validarlo. Se
+# comprobó contra el reporte oficial de la semana 33, Brasil, banda 200
+# (que es donde Som Livre pesa más, un 10,5% de los streams):
+#
+#     sello       oficial   como Indies   como Sony
+#     Sony         0,2755      0,1528       0,2755
+#     Indies       0,2241      0,3468       0,2241
+#
+# Con Som Livre y Altafonte dentro de Sony los dos valores dan EXACTO; como
+# Indies se desvían 12 puntos. Confirmado también en España.
 LABEL_GROUP_ALIASES = {
-    "Som Livre": "Indies",
-    "Altafonte": "Indies",
+    "Som Livre": "Sony",
+    "Altafonte": "Sony",
 }
 
 
 def normalizar_label_group(valor: str) -> str:
-    """Aplica el agrupamiento real usado en los reportes (Som Livre/Altafonte -> Indies).
+    """Aplica el agrupamiento real usado en los reportes (Som Livre/Altafonte -> Sony).
 
     Cualquier otro valor de label_group se devuelve tal cual viene de la fuente.
     """
@@ -226,12 +260,188 @@ COLOR_SEMAFORO_ROJO = "FFC7CE"
 COLOR_SEMAFORO_AMARILLO = "FFEB9C"
 COLOR_SEMAFORO_VERDE = "C6EFCE"
 
-# Cuántas canciones como máximo se listan en el "listado de canciones" de
-# "Resumen Total" (ver chart_semanal.construir_listado_canciones) -- con
-# todas las canciones de una semana (pueden ser 1000+) la hoja queda
-# enorme y poco práctica; el usuario pidió dejar solo las mejores 200 (ya
-# ordenadas por cantidad de países y suma de posiciones).
-TOP_N_LISTADO_CANCIONES = 200
+# Color de LETRA que acompaña a cada uno de esos rellenos en las "Reglas de
+# resaltado de celdas" de Excel. Verificado 1:1 contra el formato condicional
+# real del reporte MS TOP 200 (los dxf de la pestaña "% Market Share").
+COLOR_TEXTO_SEMAFORO_ROJO = "9C0006"
+COLOR_TEXTO_SEMAFORO_AMARILLO = "9C5700"
+COLOR_TEXTO_SEMAFORO_VERDE = "006100"
+
+# Semáforo de la POSICIÓN en el listado de canciones de "Resumen Total"
+# (pedido en la reunión del 14/09/2026). Cada posición se escribe en la
+# columna de la banda que le corresponde (una posición 25 va en la columna
+# "top 30", ver chart_semanal._tier_de_posicion), así que el color se define
+# por banda y no por rangos sueltos: así no quedan huecos sin pintar.
+#
+#   banda 10           -> verde   (el mejor tramo)
+#   bandas 30 y 50     -> amarillo
+#   bandas 100 y 200   -> rojo
+#
+# Mismos rellenos y colores de letra del semáforo del Market Share, para que
+# los tres reportes se lean igual.
+COLOR_POSICION_POR_BANDA = {
+    10: (COLOR_SEMAFORO_VERDE, COLOR_TEXTO_SEMAFORO_VERDE),
+    30: (COLOR_SEMAFORO_AMARILLO, COLOR_TEXTO_SEMAFORO_AMARILLO),
+    50: (COLOR_SEMAFORO_AMARILLO, COLOR_TEXTO_SEMAFORO_AMARILLO),
+    100: (COLOR_SEMAFORO_ROJO, COLOR_TEXTO_SEMAFORO_ROJO),
+    200: (COLOR_SEMAFORO_ROJO, COLOR_TEXTO_SEMAFORO_ROJO),
+}
+
+# Tamaños de la pestaña resumen "% Market Share" y de las pestañas por país
+# del reporte de Market Share (pedido en la misma reunión: "que tenga todos
+# los bordes y aumentar un poco el tamaño de la letra y el ancho y largo de
+# las celdas"). El default de Excel es letra 11, alto de fila ~15 y ancho de
+# columna 11: esto sube un punto la letra y un par de puntos el resto -- lo
+# justo para que se lea más cómodo sin que la hoja deje de caber en pantalla.
+MS_FUENTE_TAMANO = 12
+MS_ANCHO_COLUMNA = 13
+MS_ALTO_FILA = 19
+# Gris del borde de la cuadrícula (la usan los dos reportes: el Market Share
+# y, desde la reunión del 14/09/2026, también el Chart Semanal). Más suave
+# que el negro puro: marca la retícula sin competir con los colores del
+# semáforo.
+COLOR_BORDE_CUADRICULA = "808080"
+
+# Tope de canciones del "listado de canciones" de "Resumen Total" (ver
+# chart_semanal.construir_listado_canciones). None = sin tope, todas.
+#
+# Estuvo en 200 mientras el listado traía TODOS los sellos: una semana
+# completa son 1000+ canciones y la hoja quedaba impracticable. Desde la
+# revisión del 16/09/2026 el listado trae solo productos Universal -- unos
+# 226 por semana --, así que el tope dejó de proteger de nada y pasó a
+# esconder productos: con 200 el TOP 200 de Colombia mostraba 45 tracks
+# cuando la serie histórica decía 46. Sin tope, el detalle cuadra con la
+# serie, que es la comprobación que hizo el revisor.
+TOP_N_LISTADO_CANCIONES = None
+
+# ---------------------------------------------------------------------------
+# Reportes BMAT (Colombia, Perú, Ecuador y Centroamérica)
+#
+# Son reportes aparte de los de Spotify, con su propio universo de datos:
+# BMAT consolida varias plataformas (ver BMAT_FUENTE), no solo Spotify, y usa
+# sus propias bandas y su propia lista de sellos -- 8 en vez de 7 (aparece
+# "ADA Music") y con otra grafía ("Ingrooves" en vez de "INgrooves",
+# "Independientes" en vez de "Indies"). Por eso NO reutiliza LABEL_GROUPS_MS
+# ni BANDAS_MARKET_SHARE: son universos distintos que coinciden en parte, y
+# unificarlos escondería esa diferencia.
+#
+# Todo verificado contra los archivos reales de la semana 35 de 2026: las
+# fuentes "WK35-XX.xlsx", los intermedios "Top N BMAT XX a sem 35" y los
+# reportes "MS BMAT XX a Sem 35" (ver claude/bmat_analisis_semana35.md).
+# ---------------------------------------------------------------------------
+BMAT_BANDAS = [10, 50, 100, 200, 1000, 3000, 5000, 10000]
+BMAT_LABELS = [
+    "Universal", "Ingrooves", "Virgin", "Sony",
+    "The Orchard", "Warner", "ADA Music", "Independientes",
+]
+
+# Cada mercado = un archivo fuente "WK<semana>-<código>.xlsx". `top` es el
+# tamaño de la fuente (y la banda más grande que se reporta); `sigla` es la
+# del nombre de los archivos y de las hojas (Panamá viene como "PA" en la
+# fuente pero los reportes siempre la llamaron "PN").
+BMAT_MERCADOS = {
+    "CO": {"nombre": "Colombia", "sigla": "COL", "top": 10000},
+    "PE": {"nombre": "Perú", "sigla": "PE", "top": 10000},
+    "EC": {"nombre": "Ecuador", "sigla": "EC", "top": 5000},
+    "CAM": {"nombre": "Centroamérica", "sigla": "CAM", "top": 3000},
+    "CR": {"nombre": "Costa Rica", "sigla": "CR", "top": 3000},
+    "GT": {"nombre": "Guatemala", "sigla": "GT", "top": 3000},
+    "PA": {"nombre": "Panamá", "sigla": "PN", "top": 3000},
+    "SV": {"nombre": "El Salvador", "sigla": "SV", "top": 3000},
+    "NI": {"nombre": "Nicaragua", "sigla": "NI", "top": 3000},
+    "HN": {"nombre": "Honduras", "sigla": "HN", "top": 3000},
+    "DO": {"nombre": "Rep. Dominicana", "sigla": "DO", "top": 3000},
+}
+
+# Los cuatro reportes finales. Dos "familias" de formato, copiadas de los
+# archivos reales:
+#   A (COL, PE, EC): hoja de % "Market Share ..." + hoja de detalle
+#     (tracks, streams y %) con el año en la fila 1 y la semana en la 2.
+#   B (CAM): por cada uno de los 8 mercados, una hoja "MS XX" (%) y una hoja
+#     "XX" (detalle), con el año en la fila 2/3 y un título por país.
+# `hojas` = {mercado: (hoja de %, hoja de detalle)}.
+BMAT_REPORTES = {
+    "COL": {
+        "familia": "A", "archivo": "MS BMAT COL",
+        "hojas": {"CO": ("Market Share Promusica Colombia", "Resumen Promusica Colombia")},
+        "titulo": "PROMUSICA COLOMBIA",
+    },
+    "PE": {
+        "familia": "A", "archivo": "MS BMAT Peru",
+        "hojas": {"PE": ("Market Share BMAT Peru", "Detalle BMAT Peru")},
+        "titulo": "BMAT PERÚ",
+    },
+    "EC": {
+        "familia": "A", "archivo": "MS BMAT Ecuador",
+        "hojas": {"EC": ("Market Share BMAT Ecuador", "Detalle BMAT Ecuador")},
+        "titulo": "BMAT ECUADOR",
+    },
+    "CAM": {
+        "familia": "B", "archivo": "MS BMAT CAM",
+        "hojas": {m: ("MS " + BMAT_MERCADOS[m]["sigla"], BMAT_MERCADOS[m]["sigla"])
+                  for m in ["CAM", "CR", "GT", "PA", "SV", "NI", "HN", "DO"]},
+        "titulo": "APDIF",
+    },
+}
+
+# Qué se genera de verdad cada semana: los cuatro reportes (Colombia, Perú,
+# Ecuador y Centroamérica con sus 8 mercados) y, por cada mercado, su
+# intermedio "Top N BMAT XX" con estas cuatro hojas (en este orden). Las
+# hoja "TOP 50 - Posiciones UMG" sigue programada y probada: para activarla
+# basta con agregarla a la lista. Para apagar un reporte, se saca de
+# BMAT_REPORTES_ACTIVOS.
+BMAT_REPORTES_ACTIVOS = ["COL", "PE", "EC", "CAM"]
+BMAT_HOJAS_INTERMEDIO = ["Streams Catalogo", "Resumen", "TOP 200 Nuevos", "Tracks Independientes",
+                         "Archivo Base"]
+BMAT_HOJAS_INTERMEDIO_DISPONIBLES = BMAT_HOJAS_INTERMEDIO + ["TOP 50 - Posiciones UMG"]
+
+
+def bmat_mercados_activos() -> list:
+    """Los mercados de los reportes activos, en el orden de BMAT_MERCADOS."""
+    activos = {m for r in BMAT_REPORTES_ACTIVOS for m in BMAT_REPORTES[r]["hojas"]}
+    return [m for m in BMAT_MERCADOS if m in activos]
+
+
+# "Disqueras" es la clasificación de cada track (la columna que se agregaba a
+# mano en "Archivo Base"): el nombre de una major o, si es independiente, el
+# de su distribuidora. Estos son los nombres de major tal como se escriben
+# en esa columna, y a qué sello del reporte van. Se comparan sin distinguir
+# mayúsculas ("INgrooves" e "Ingrooves" aparecen los dos en los archivos, y
+# las fórmulas GETPIVOTDATA de Excel tampoco distinguen). Cualquier otro
+# valor -> "Independientes".
+BMAT_DISQUERAS_MAJOR = {
+    "Universal Music Group": "Universal",
+    "INgrooves": "Ingrooves",
+    "Virgin": "Virgin",
+    "Sony Music Entertainment": "Sony",
+    "The Orchard": "The Orchard",
+    "Warner Music Group": "Warner",
+    "ADA Music": "ADA Music",
+}
+
+# Columnas de la fuente WK que usa el cálculo.
+BMAT_COL_POSICION = "Posición"
+BMAT_COL_STREAMS = "Streams con video"
+BMAT_COL_ISRCS = "ISRCs"
+BMAT_COL_DISTRIBUIDORA = "Distribuidora original"
+BMAT_COL_DISQUERA = "Disquera original"
+BMAT_COL_MOVIMIENTO = "comparison_last_week"
+BMAT_COL_LANZAMIENTO = "Fecha de lanzamiento"
+
+# "Streams Catalogo" del intermedio: catálogo = lanzado hasta esta fecha
+# (inclusive), front line = después. Es la fecha que trae la plantilla.
+BMAT_CORTE_CATALOGO = "2023-12-31"
+
+# Tracks con titularidad compartida entre dos sellos (ej. "Dakiti": 50%
+# The Orchard / 50% Universal). Sus streams se reparten entre los dos según
+# el %; el conteo de tracks no cambia. Es la lista que traía la hoja
+# "Resumen" de los intermedios, en un Excel que se puede editar.
+BMAT_TITULARIDAD_XLSX = ROOT_DIR / "data" / "bmat_titularidad_compartida.xlsx"
+
+BMAT_FUENTE = "FUENTE ( Napster, GooglePlay, Spotify, Deezer)"
+# Azul marino de los encabezados de esos archivos (distinto del de los
+# reportes de Spotify, que usan 1F3864).
+COLOR_BANNER_BMAT = "002060"
 
 CHART_SHEET_RESUMEN = "Resumen Total"
 CHART_SHEET_DETALLE = "Detalle Tracks"
@@ -244,3 +454,82 @@ MS_SHEET_PORCENTAJE = "% Market Share"
 # openpyxl -- se usó un azul marino estándar equivalente).
 COLOR_BANNER_MS_FONDO = "1F3864"
 COLOR_BANNER_MS_TEXTO = "FFFFFF"
+
+
+# ---------------------------------------------------------------------------
+# Reporte MENSUAL "Market Share Spotify Latam"
+# ---------------------------------------------------------------------------
+# Es el hermano mensual del Reporte_MS_TOP200: mismo % de streams por sello,
+# pero con los meses como columnas y con una banda más (Top 20). Ver
+# src/mensual.py (cómo se arma un mes) y src/mensual_reporte.py (el Excel).
+
+MENSUAL_BANDAS = [10, 20, 50, 100, 200]
+# El "Resumen" solo muestra cuatro de las cinco (no lleva el Top 20).
+MENSUAL_BANDAS_RESUMEN = [10, 50, 100, 200]
+
+# Los 17 países, en el orden en que van las hojas y las columnas del
+# Resumen, con el nombre que lleva cada encabezado.
+MENSUAL_PAISES = [
+    ("CO", "COLOMBIA"), ("PE", "PERU"), ("EC", "ECUADOR"), ("CR", "COSTA RICA"),
+    ("GT", "GUATEMALA"), ("PN", "PANAMA"), ("HN", "HONDURAS"), ("NI", "NICARAGUA"),
+    ("SV", "EL SALVADOR"), ("DO", "REP. DOMINICANA"), ("VE", "VENEZUELA"),
+    ("AR", "ARGENTINA"), ("CL", "CHILE"), ("BR", "BRASIL"), ("MX", "MEXICO"),
+    ("SP", "ESPAÑA"), ("PT", "PORTUGAL"),
+]
+
+# El nombre de la hoja de país no siempre es la sigla: Chile es "CH" en el
+# archivo real aunque su código de país sea CL.
+MENSUAL_HOJAS_PAIS = {sigla: ("CH" if sigla == "CL" else sigla)
+                      for sigla, _ in MENSUAL_PAISES}
+MENSUAL_HOJA_DET = "{sigla}-Det"
+
+# Cómo se llama cada sello en cada bloque de las hojas Det (el archivo real
+# escribe el mismo sello distinto en el bloque de tracks, el de streams y el
+# de %).
+MENSUAL_NOMBRES_DET = {
+    "tracks": {"Universal": "Universal", "INgrooves": "INgrooves", "Virgin": "Virgin",
+               "Sony": "Sony", "Orchard": "Orchard", "Warner": "Warner", "Indies": "Indies"},
+    "streams": {"Universal": "Universal", "INgrooves": "INgrooves", "Virgin": "Virgin",
+                "Sony": "Sony", "Orchard": "Orchard", "Warner": "Warner", "Indies": "Indies"},
+    "pct": {"Universal": "Universal Music", "INgrooves": "INgrooves", "Virgin": "Virgin",
+            "Sony": "Sony", "Orchard": "The Orchard", "Warner": "Warner",
+            "Indies": "Independientes"},
+}
+
+# En las hojas de país los sellos van en otro orden (Universal, Sony, y
+# después los demás), igual que en el reporte semanal.
+MENSUAL_ORDEN_PAIS = ["Universal", "Sony", "INgrooves", "Virgin", "Orchard", "Warner", "Indies"]
+MENSUAL_NOMBRES_PAIS = {
+    "Universal": "Universal Music", "Sony": "Sony", "INgrooves": "INgrooves",
+    "Virgin": "Virgin", "Orchard": "The Orchard", "Warner": "Warner",
+    "Indies": "Independientes",
+}
+
+# El histórico arranca en mayo de 2017, que es donde empieza la plantilla.
+MENSUAL_INICIO = (2017, 5)
+MENSUAL_ARCHIVO = "Market Share Spotify Latam a {mes} de {anio}.xlsx"
+
+
+# Semáforo del reporte mensual. Son los mismos umbrales y colores que trae la
+# plantilla real en su formato condicional (celdas BG2/BH2/BI2/BJ2/BL2 de la
+# hoja "Resumen"): el objetivo de Universal es el 30%, y los cortes están
+# puestos de forma que lo que se ve redondeado a entero cuadre con el color.
+#
+#   31% o más  -> verde      (> 0,3049)
+#   30%        -> amarillo   (entre 0,295 y 0,3049)
+#   29% o menos-> rojo       (< 0,295)
+#   40% o más  -> celeste    (> 0,395), por encima del verde
+MENSUAL_UMBRAL_VERDE = 0.3049
+MENSUAL_UMBRAL_ROJO = 0.295
+MENSUAL_UMBRAL_DESTACADO = 0.395
+
+# (relleno, color de letra). Los tres primeros son los colores estándar de
+# Excel para "bueno / neutral / malo"; el celeste es el que usa la plantilla.
+MENSUAL_COLOR_VERDE = ("C6EFCE", "006100")
+MENSUAL_COLOR_AMARILLO = ("FFEB9C", "9C5700")
+MENSUAL_COLOR_ROJO = ("FFC7CE", "9C0006")
+MENSUAL_COLOR_DESTACADO = ("2EE2FA", "000000")
+
+# Azul grisáceo de la columna de meses del "Resumen" (en la plantilla es un
+# color de tema, dk2 aclarado al 40%).
+MENSUAL_COLOR_MESES = "8497B0"

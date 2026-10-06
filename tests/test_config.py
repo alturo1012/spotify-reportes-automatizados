@@ -12,9 +12,14 @@ def test_country_code_map_tiene_los_17_paises_de_paises_ms():
     assert set(config.PAISES_MS) == codigos_en_mapa
 
 
-def test_normalizar_label_group_agrupa_som_livre_y_altafonte_en_indies():
-    assert config.normalizar_label_group("Som Livre") == "Indies"
-    assert config.normalizar_label_group("Altafonte") == "Indies"
+def test_normalizar_label_group_agrupa_som_livre_y_altafonte_en_sony():
+    # Estaban en "Indies" hasta la revisión del 16/09/2026. Se comprobó
+    # contra el reporte oficial de la semana 33 (Brasil, banda 200, donde
+    # Som Livre pesa 10,5%): con los dos dentro de Sony, Sony da 0,2755 y
+    # Indies 0,2241, exactamente los valores del oficial; como Indies se
+    # desviaban 12 puntos. Ver el comentario en config.LABEL_GROUP_ALIASES.
+    assert config.normalizar_label_group("Som Livre") == "Sony"
+    assert config.normalizar_label_group("Altafonte") == "Sony"
 
 
 def test_normalizar_label_group_deja_igual_los_demas_valores():
