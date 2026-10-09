@@ -76,13 +76,20 @@ def _generar_semana(carpeta, anio: int = None, revision=None, salida=None,
 
     fuentes = bmat_calculo.buscar_fuentes(carpeta)
     semana = bmat_calculo.identificar_archivo(next(iter(fuentes.values())))[0]
-    anio = anio or bmat_calculo.anio_de_la_semana(semana, hoy)
+    anio_deducido = anio is None
+    anio = anio or bmat_calculo.anio_de_la_semana(semana, hoy, ultima=bmat_calculo.ultima_semana())
     etiqueta = etiqueta_semana(anio, semana)
     salida = Path(salida or config.OUTPUT_DIR) / f"BMAT Sem {semana} de {anio}"
     salida.mkdir(parents=True, exist_ok=True)
 
     resultado = ResultadoBMAT(anio=anio, semana=semana, carpeta_salida=salida,
                               correcciones=correcciones)
+    if anio_deducido and anio != (hoy or date.today()).year:
+        # Cambio de año: el archivo no trae el año y se dedujo. Mejor decirlo.
+        resultado.avisos.append(
+            f"La WK{semana} se guardó como semana {semana} de {anio} (el archivo no trae el "
+            f"año; se dedujo de la última semana guardada). Si es de otro año, vuelve a "
+            f"generar con --anio.")
 
     # Todos los mercados se clasifican contra la MISMA foto de la tabla: un
     # track nuevo en Colombia y en Perú sale igual en los dos.

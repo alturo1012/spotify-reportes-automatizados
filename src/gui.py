@@ -28,6 +28,7 @@ import pandas as pd
 import logging
 
 from . import bmat_calculo, bmat_proceso, chart_semanal, config, history, mensual, preferencias, registro
+from .version import VERSION
 from . import main as main_module
 
 log = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ def texto_ultima_semana() -> str:
     return f"Última semana cargada: {semana} de {anio}  ({legible})"
 
 
-def generar(fuente_path: str, semana: str, salida: str = None):
+def generar(fuente_path: str, semana: str, salida: str = None, permitir_hueco: bool = False):
     """Corre el mismo proceso que `main.py` (carga la fuente, guarda la
     semana en el histórico si hace falta, genera los dos reportes) y
     devuelve las rutas de los reportes generados, para que la GUI pueda
@@ -76,8 +77,10 @@ def generar(fuente_path: str, semana: str, salida: str = None):
     en el mensaje final.
     """
     carpeta = Path(salida) if salida else preferencias.carpeta_salida()
-    avisos = list(main_module.main(
-        ["--fuente", fuente_path, "--semana", semana, "--salida", str(carpeta)]) or [])
+    argv = ["--fuente", fuente_path, "--semana", semana, "--salida", str(carpeta)]
+    if permitir_hueco:
+        argv.append("--permitir-hueco")
+    avisos = list(main_module.main(argv) or [])
     aviso_fechas = chart_semanal.ultimo_aviso_fechas()
     if aviso_fechas:
         avisos.append(aviso_fechas)
@@ -325,7 +328,7 @@ class VentanaMensual(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Reportes Spotify Latam")
+        self.title(f"Reportes Spotify Latam - versión {VERSION}")
         self.geometry("560x400")
         self.resizable(False, False)
 
@@ -386,6 +389,11 @@ class App(tk.Tk):
 
         # BMAT y el mensual son otros procesos (otras fuentes, otros
         # reportes): cada uno con su propia ventana.
+        # Versión también abajo a la izquierda: en Windows la barra de título
+        # se corta si el nombre es largo, y es lo primero que hay que preguntar
+        # cuando alguien reporta un problema.
+        tk.Label(self, text=f"versión {VERSION}", fg="#888", font=("Segoe UI", 8)).place(
+            relx=0.0, rely=1.0, x=12, y=-12, anchor="sw")
         tk.Button(self, text="Reportes BMAT...", command=lambda: VentanaBMAT(self)).place(
             relx=1.0, rely=1.0, x=-12, y=-10, anchor="se")
         tk.Button(self, text="Reporte mensual...",
@@ -434,14 +442,21 @@ class App(tk.Tk):
         # 150ms hasta que el hilo de trabajo deje un resultado.
         self.after(150, self._revisar_resultado)
 
-    def _generar_en_hilo(self, fuente: str, semana: str, salida: str = None) -> None:
+    def _generar_en_hilo(self, fuente: str, semana: str, salida: str = None,
+                         permitir_hueco: bool = False) -> None:
         # Corre en un hilo aparte para que la ventana no se quede "congelada"
         # (sin responder) mientras se procesan las ~3000 filas del archivo
         # fuente -- puede tardar varios segundos. No debe llamar a NINGÚN
         # método de Tkinter directamente (ver nota en __init__): solo deja
         # el resultado en la cola.
         try:
-            chart_out, ms_out, aviso = generar(fuente, semana, salida)
+            chart_out, ms_out, aviso = generar(fuente, semana, salida, permitir_hueco)
+        except main_module.CargaBloqueada as e:
+            # No es un error del programa: la carga desordenaría el
+            # histórico. Se le explica al usuario y, si se puede, se le
+            # pregunta si quiere cargarla igual.
+            self._resultado_queue.put(("bloqueada", (str(e), e.se_puede_forzar,
+                                                     (fuente, semana, salida))))
         except (SystemExit, Exception) as e:  # noqa: BLE001 -- se la mostramos tal cual al usuario
             log.error("Ventana semanal: %s", e, exc_info=True)
             self._resultado_queue.put(("error", con_ruta_del_registro(str(e))))
@@ -457,8 +472,26 @@ class App(tk.Tk):
 
         if tipo == "exito":
             self._exito(*dato)
+        elif tipo == "bloqueada":
+            self._bloqueada(*dato)
         else:
             self._error(dato)
+
+    def _bloqueada(self, mensaje: str, se_puede_forzar: bool, argumentos) -> None:
+        self.boton_generar.config(state="normal")
+        if not se_puede_forzar:
+            self.estado_var.set("No se cargó: la semana es anterior a la última cargada.")
+            messagebox.showerror("Semana fuera de orden", mensaje)
+            return
+        self.estado_var.set("No se cargó: faltan semanas antes de esta.")
+        if messagebox.askyesno("Faltan semanas", f"{mensaje}\n\n¿Cargar esta semana igual?",
+                               icon="warning", default="no"):
+            log.warning("El usuario decidió cargar igual con semanas faltantes")
+            self.boton_generar.config(state="disabled")
+            self.estado_var.set("Generando reportes, un momento...")
+            threading.Thread(target=self._generar_en_hilo, args=(*argumentos, True),
+                             daemon=True).start()
+            self.after(150, self._revisar_resultado)
 
     def _exito(self, chart_out: Path, ms_out: Path, aviso: str = None) -> None:
         self.boton_generar.config(state="normal")
@@ -486,7 +519,7 @@ class App(tk.Tk):
 def main():
     registro.configurar()
     registro.registrar_excepciones_no_capturadas()
-    log.info("Aplicativo abierto (ROOT_DIR=%s)", config.ROOT_DIR)
+    log.info("Aplicativo abierto, versión %s (ROOT_DIR=%s)", VERSION, config.ROOT_DIR)
     app = App()
     # Errores dentro de un botón o una ventana: Tkinter los imprimiría en la
     # consola, que el .exe no tiene. Se anotan y se le muestran al usuario.

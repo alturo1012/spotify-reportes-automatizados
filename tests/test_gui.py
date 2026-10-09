@@ -193,3 +193,29 @@ def test_generar_mensual_avisa_si_al_mes_le_falta_una_semana(tmp_path):
     _ruta, _texto, avisos = gui.generar_mensual(2026, 9, str(tmp_path / "mensual"))
 
     assert any("falta" in a for a in avisos)
+
+
+def test_generar_pasa_permitir_hueco_al_semanal(tmp_path, monkeypatch):
+    recibido = {}
+
+    def _falso(argv):
+        recibido["argv"] = argv
+        return []
+
+    monkeypatch.setattr(gui.main_module, "main", _falso)
+    gui.generar("f.xlsx", "40", str(tmp_path), permitir_hueco=True)
+    assert "--permitir-hueco" in recibido["argv"]
+    gui.generar("f.xlsx", "40", str(tmp_path))
+    assert "--permitir-hueco" not in recibido["argv"]
+
+
+def test_la_ventana_muestra_la_version():
+    from src.version import VERSION
+    try:
+        app = gui.App()
+    except Exception as e:  # sin pantalla (tkinter.TclError)
+        pytest.skip(f"sin pantalla: {e}")
+    try:
+        assert VERSION in app.title()
+    finally:
+        app.destroy()

@@ -97,11 +97,37 @@ def leer_fuente(path) -> pd.DataFrame:
     return df.sort_values(config.BMAT_COL_POSICION).reset_index(drop=True)
 
 
-def anio_de_la_semana(semana: int, hoy: date = None) -> int:
-    """El archivo no trae el año: es el actual, salvo que la semana sea
-    posterior a la de hoy (ej. correr la WK52 en enero) -> el anterior."""
+def anio_de_la_semana(semana: int, hoy: date = None, ultima=None) -> int:
+    """El archivo WK no trae el año: hay que deducirlo.
+
+    1. Si ya hay semanas BMAT guardadas (`ultima` = (año, semana) más
+       reciente), se decide contra ella, que es lo más confiable:
+       - semana mayor que la última -> el mismo año (WK41 después de la 40);
+       - semana menor por mucho (26 o más) -> el año siguiente: es el cambio
+         de año (WK01 después de la WK52);
+       - semana menor por poco -> el mismo año: es volver a generar una
+         semana reciente (por ejemplo, con la lista de revisión corregida).
+       Nunca devuelve un año posterior al de hoy.
+    2. Sin historial, se usa el calendario ISO de hoy. La versión anterior
+       usaba `hoy.year` con la semana ISO, y eso fallaba los primeros días de
+       enero: el 1 de enero de 2027 es la semana ISO 53 de 2026, así que una
+       WK52 cargada ese día quedaba en 2027.
+
+    Para cargar una semana vieja a propósito, `--anio` (o el parámetro
+    `anio` de bmat_proceso.generar_semana) manda sobre todo esto.
+    """
     hoy = hoy or date.today()
-    return hoy.year if semana <= hoy.isocalendar()[1] + 1 else hoy.year - 1
+    if ultima:
+        anio_ult, semana_ult = int(ultima[0]), int(ultima[1])
+        if semana > semana_ult:
+            anio = anio_ult
+        elif semana_ult - semana >= 26:
+            anio = anio_ult + 1
+        else:
+            anio = anio_ult
+        return min(anio, hoy.year)
+    anio_iso, semana_iso, _ = hoy.isocalendar()
+    return anio_iso if semana <= semana_iso + 1 else anio_iso - 1
 
 
 def bandas_de(mercado: str, filas_fuente: int = None) -> list:

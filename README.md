@@ -4,7 +4,9 @@ Aplicativo en Python que genera los reportes de charts y market share de
 Spotify Latam y los reportes BMAT, a partir de las fuentes semanales. Reemplaza
 el proceso manual en Excel/VBA.
 
-Versión de entrega: `v1.1` (rama `main`).
+Versión de entrega: `v1.2` (rama `main`). La versión se ve en el título de la
+ventana y abajo a la izquierda; es lo primero que hay que preguntar cuando
+alguien reporta un problema.
 
 ## Qué genera
 
@@ -48,6 +50,7 @@ spotify-reportes-automatizados/
 │   ├── sembrar_historico.py  # Crea la base a partir de data/history/seed/
 │   ├── recargar_semanas.py   # Reconstruye el histórico cargando las semanas en orden
 │   ├── completar_semanas.py  # Rellena tracks y streams de semanas ya sembradas
+│   ├── empaquetar_instalacion.py  # Zip para instalar en otro equipo con la base al día
 │   ├── generar_mensual.py    # Reporte mensual por línea de comandos
 │   └── generar_bmat.py       # Reportes BMAT por línea de comandos
 ├── src/
@@ -66,9 +69,11 @@ spotify-reportes-automatizados/
 │   ├── preferencias.py       # Carpeta de salida recordada
 │   ├── respaldo.py           # Respaldo automático de la base
 │   ├── registro.py           # Registro de errores en data/logs/
+│   ├── paquete.py            # Paquete de instalación
+│   ├── version.py            # Número de versión del aplicativo
 │   ├── main.py               # Proceso semanal por línea de comandos
 │   └── gui.py                # Ventana del aplicativo
-├── tests/                    # 216 pruebas automáticas
+├── tests/                    # 232 pruebas automáticas
 ├── run_gui.py                # Punto de entrada del ejecutable
 ├── build.bat                 # Genera ReportesSpotifyLatam.exe (Windows)
 ├── .env.example              # Plantilla de credenciales de Spotify
@@ -97,12 +102,28 @@ Por último, genera el ejecutable con `build.bat`. Queda
 
 **El histórico sembrado no llega hasta hoy.** La siembra trae Spotify hasta la
 semana 33 de 2026, BMAT hasta la semana 35 de 2026 y el mensual hasta julio de
-2026. En una instalación nueva hay dos caminos:
+2026. Por eso, para instalar en otro equipo lo normal es usar el paquete de
+instalación (abajo), que lleva la base al día.
 
-- copiar `data/history/universal_data.db` desde el equipo donde ya se venía
-  usando (lo recomendado), o
-- sembrar y volver a cargar las semanas posteriores, en orden, con
-  `scripts/recargar_semanas.py` (Spotify) y el botón de BMAT semana por semana.
+## Instalar en otro equipo: paquete de instalación
+
+En el equipo donde ya se viene usando, después de correr `build.bat`:
+
+```powershell
+python -m scripts.empaquetar_instalacion
+python -m scripts.empaquetar_instalacion --salida "D:/Entregas"
+```
+
+Deja en `data/output/` un `ReportesSpotifyLatam_v1.2_instalacion_<fecha>.zip`
+(unos 19 MB) con el ejecutable, una copia verificada de la base actual, la
+siembra, `release_date.db`, la lista de titularidad compartida de BMAT,
+`.env.example` y un `LEEME_INSTALACION.txt` con los pasos y hasta qué semana
+llega el histórico. En el otro equipo basta con descomprimirlo, crear el `.env`
+y abrir el ejecutable; no hace falta Python.
+
+No lleva los respaldos, el registro de errores, las preferencias de este equipo
+ni el `.env`. Para incluir las credenciales de Spotify de este equipo se agrega
+`--con-credenciales`; en ese caso, no compartir el zip por un canal público.
 
 ## Uso con la ventana
 
@@ -164,6 +185,35 @@ python -m scripts.generar_bmat "C:/ruta/BMAT semana 39" --revision "Revisar clas
 
 Si la fecha de un archivo semanal ya está en el histórico, no se duplica: solo
 se regeneran los reportes.
+
+### Las semanas se cargan en orden
+
+El número de semana se asigna por orden de carga, así que el aplicativo se
+detiene **antes de guardar** si una carga desordenaría el histórico:
+
+- **La fuente es anterior a la última semana cargada:** se bloquea siempre y no
+  se genera nada. La única forma de meter esa semana en su lugar es
+  `recargar_semanas` (ver abajo).
+- **Faltan semanas entre la última cargada y esta:** se bloquea y dice qué
+  fechas faltan. Lo normal es cargar primero las que faltan. Si una semana de
+  verdad no existe en BigQuery, la ventana pregunta si cargar igual; por
+  terminal se agrega `--permitir-hueco`.
+
+### Revisión de la fuente
+
+Al cargar el archivo de BigQuery, el aplicativo revisa que esté completo y
+avisa (sin detener nada) si a algún país le faltan datos, si un país trae
+menos de las 200 posiciones o si hay filas sin streams o en cero. Un track
+compartido entre dos sellos viene en dos filas con la misma posición: eso es
+normal y no genera aviso.
+
+### Año de BMAT
+
+Los archivos `WK` no traen el año. El aplicativo lo deduce de la última semana
+BMAT guardada: una semana mayor que la última es del mismo año, y una mucho
+menor (por ejemplo `WK01` después de la `WK52`) es del año siguiente. Si el año
+que asigna no es el actual, lo avisa. Para cargar una semana de otro año a
+propósito se usa `--anio`.
 
 ## Mantenimiento del histórico
 
@@ -236,7 +286,7 @@ Confirmadas por el área. No se cambian sin preguntar.
 pytest -q
 ```
 
-Deben pasar las 216. Las de la ventana necesitan `tkinter` (viene con el
+Deben pasar las 232. Las de la ventana necesitan `tkinter` (viene con el
 Python de Windows).
 
 Después de cualquier cambio de código hay que volver a correr `build.bat`: el

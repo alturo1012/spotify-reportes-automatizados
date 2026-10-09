@@ -77,6 +77,26 @@ def test_anio_de_la_semana():
     assert bmat_calculo.anio_de_la_semana(52, date(2027, 1, 8)) == 2026
 
 
+def test_anio_de_la_semana_sin_historial_usa_el_anio_iso():
+    # El 1 de enero de 2027 es la semana ISO 53 de 2026: una WK52 cargada ese
+    # día es de 2026. La versión anterior (hoy.year) la ponía en 2027.
+    assert bmat_calculo.anio_de_la_semana(52, date(2027, 1, 1)) == 2026
+    assert bmat_calculo.anio_de_la_semana(1, date(2027, 1, 8)) == 2027
+
+
+def test_anio_de_la_semana_con_historial():
+    hoy = date(2027, 1, 10)
+    # la siguiente a la última guardada: mismo año
+    assert bmat_calculo.anio_de_la_semana(52, hoy, ultima=(2026, 51)) == 2026
+    # vuelta de año: WK01 después de la WK52
+    assert bmat_calculo.anio_de_la_semana(1, hoy, ultima=(2026, 52)) == 2027
+    # volver a generar una semana reciente (lista de revisión corregida)
+    assert bmat_calculo.anio_de_la_semana(52, hoy, ultima=(2026, 52)) == 2026
+    assert bmat_calculo.anio_de_la_semana(50, hoy, ultima=(2026, 52)) == 2026
+    # nunca un año posterior al de hoy
+    assert bmat_calculo.anio_de_la_semana(1, date(2026, 12, 28), ultima=(2026, 52)) == 2026
+
+
 def test_buscar_fuentes_rechaza_semanas_mezcladas(tmp_path):
     for nombre in ["WK36-CO.xlsx", "WK36-PE.xlsx", "notas.xlsx"]:
         (tmp_path / nombre).write_bytes(b"")
