@@ -19,12 +19,15 @@ Para corregir la clasificación: llenar la columna "Disqueras corregida" en
 la lista y volver a correr la MISMA carpeta pasando esa lista. La semana se
 recalcula con las correcciones y quedan guardadas para las siguientes.
 """
+import logging
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from . import bmat, bmat_calculo, config
+from . import bmat, bmat_calculo, config, registro, respaldo
 from . import bmat_clasificacion as clasif
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,6 +50,25 @@ def etiqueta_semana(anio: int, semana: int) -> str:
 
 def generar_semana(carpeta, anio: int = None, revision=None, salida=None,
                    hoy: date = None) -> ResultadoBMAT:
+    """Respalda la base, corre la semana y deja todo en el registro."""
+    registro.configurar()
+    log.info("BMAT: carpeta=%s revision=%s anio=%s salida=%s", carpeta, revision, anio,
+             salida or config.OUTPUT_DIR)
+    respaldo.respaldar("bmat")
+    try:
+        r = _generar_semana(carpeta, anio=anio, revision=revision, salida=salida, hoy=hoy)
+    except Exception:
+        log.exception("Error en BMAT (carpeta=%s)", carpeta)
+        raise
+    for aviso in r.avisos:
+        log.warning("Aviso mostrado: %s", aviso)
+    log.info("BMAT terminado: semana %s de %s, %s tracks nuevos, %s correcciones, en %s",
+             r.semana, r.anio, r.tracks_nuevos, r.correcciones, r.carpeta_salida)
+    return r
+
+
+def _generar_semana(carpeta, anio: int = None, revision=None, salida=None,
+                    hoy: date = None) -> ResultadoBMAT:
     bmat_calculo.asegurar_semilla()
     clasif.sembrar()
 

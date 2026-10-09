@@ -33,12 +33,15 @@ De mayo de 2017 hasta el último mes que traía la plantilla, el histórico
 mensual viene sembrado (`history.SEED_MS_MENSUAL_CSV`, extraído de las hojas
 Det). De ahí en adelante lo cierra este módulo mes a mes.
 """
+import logging
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
-from . import config, history, mensual_reporte
+from . import config, history, mensual_reporte, registro, respaldo
+
+log = logging.getLogger(__name__)
 
 
 ORIGEN_CALCULADO = "calculado"
@@ -189,7 +192,25 @@ def generar(anio: int, mes: int, salida=None) -> tuple:
     Es lo que llaman la ventana y la línea de comandos: no hace falta cargar
     nada aparte, el mes sale de las semanas de BQ que ya están en el
     histórico.
+
+    Antes de cerrar el mes respalda la base (cerrar un mes completo lo
+    guarda en el histórico) y deja todo anotado en el registro.
     """
+    registro.configurar()
+    log.info("Mensual: %s-%02d salida=%s", anio, mes, salida or config.OUTPUT_DIR)
+    respaldo.respaldar("mensual")
+    try:
+        ruta, avisos = _generar(anio, mes, salida)
+    except Exception:
+        log.exception("Error en el reporte mensual %s-%02d", anio, mes)
+        raise
+    for aviso in avisos:
+        log.warning("Aviso mostrado: %s", aviso)
+    log.info("Mensual terminado: %s", ruta)
+    return ruta, avisos
+
+
+def _generar(anio: int, mes: int, salida=None) -> tuple:
     df, avisos, guardado = cerrar_mes(anio, mes)
     historico = history.cargar_ms_mensual()
     if not guardado and not df.empty:

@@ -39,7 +39,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from src import chart_semanal, history, load_data, market_share
+import logging
+
+from src import chart_semanal, history, load_data, market_share, registro, respaldo
+
+log = logging.getLogger(__name__)
 
 
 def _expandir(patrones) -> list:
@@ -83,6 +87,7 @@ def main(argv=None):
     parser.add_argument("fuentes", nargs="+", help="Archivos fuente (admite comodines, ej. carpeta/*.xlsx)")
     args = parser.parse_args(argv)
 
+    registro.configurar()
     print("1. Buscando archivos...")
     rutas = _expandir(args.fuentes)
     if not rutas:
@@ -97,6 +102,15 @@ def main(argv=None):
         print(f"   {fecha.date()}  {Path(ruta).name}")
 
     print("3. Vaciando el histórico y volviendo a sembrarlo...")
+    # Lo más destructivo del proyecto: vacía el histórico. Copia antes, y si
+    # la copia falla NO se sigue (a diferencia de los procesos normales).
+    copia = respaldo.respaldar("antes-de-recargar")
+    if copia is None and history.DB_PATH.exists():
+        sys.exit("No se pudo respaldar la base, así que no se vació nada. "
+                 "Revisa data/logs/aplicativo.log.")
+    if copia is not None:
+        print(f"   Respaldo de la base anterior: {copia}")
+    log.info("recargar_semanas: vaciando y recargando %s archivo(s)", len(fuentes))
     history.vaciar_historico()
     history.seed_historico()
     ultima_sembrada = history.ultima_fecha_cargada()

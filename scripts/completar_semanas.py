@@ -30,7 +30,11 @@ import glob
 import sys
 from pathlib import Path
 
-from src import history, load_data
+import logging
+
+from src import history, load_data, registro, respaldo
+
+log = logging.getLogger(__name__)
 
 
 def _expandir(patrones) -> list:
@@ -56,6 +60,8 @@ def main(argv=None):
     if not rutas:
         sys.exit("No se encontró ningún archivo con lo que pasaste.")
 
+    registro.configurar()
+    respaldo.respaldar("completar-semanas")
     completadas = 0
     for ruta in rutas:
         nombre = Path(ruta).name
@@ -71,6 +77,7 @@ def main(argv=None):
             continue
         anio, semana, filas = resultado
         print(f"  {nombre} -> semana {semana} de {anio}: {filas} valores recalculados.")
+        log.info("completar_semanas: %s -> semana %s de %s (%s valores)", nombre, semana, anio, filas)
         completadas += 1
 
     print(f"\nListo: {completadas} semana(s) completada(s).")

@@ -25,8 +25,18 @@ if sys.stderr is None:
 
 import pandas as pd
 
-from . import bmat_calculo, bmat_proceso, chart_semanal, config, history, mensual, preferencias
+import logging
+
+from . import bmat_calculo, bmat_proceso, chart_semanal, config, history, mensual, preferencias, registro
 from . import main as main_module
+
+log = logging.getLogger(__name__)
+
+
+def con_ruta_del_registro(mensaje: str) -> str:
+    """El mensaje de error que ve el usuario, más dónde quedó el detalle
+    técnico: es lo que hay que mandar si hay que pedir ayuda."""
+    return f"{mensaje}\n\nEl detalle quedó en:\n{registro.ruta_log()}"
 
 
 def texto_ultima_semana() -> str:
@@ -173,7 +183,8 @@ class VentanaBMAT(tk.Toplevel):
         try:
             self._cola.put(("exito", generar_bmat(carpeta, revision, salida)))
         except (SystemExit, Exception) as e:  # noqa: BLE001 -- se muestra tal cual
-            self._cola.put(("error", str(e)))
+            log.error("Ventana BMAT: %s", e, exc_info=True)
+            self._cola.put(("error", con_ruta_del_registro(str(e))))
 
     def _revisar(self):
         try:
@@ -288,7 +299,8 @@ class VentanaMensual(tk.Toplevel):
         try:
             self._cola.put(("exito", generar_mensual(anio, mes, salida)))
         except (SystemExit, Exception) as e:  # noqa: BLE001 -- se muestra tal cual
-            self._cola.put(("error", str(e)))
+            log.error("Ventana mensual: %s", e, exc_info=True)
+            self._cola.put(("error", con_ruta_del_registro(str(e))))
 
     def _revisar(self):
         try:
@@ -431,7 +443,8 @@ class App(tk.Tk):
         try:
             chart_out, ms_out, aviso = generar(fuente, semana, salida)
         except (SystemExit, Exception) as e:  # noqa: BLE001 -- se la mostramos tal cual al usuario
-            self._resultado_queue.put(("error", str(e)))
+            log.error("Ventana semanal: %s", e, exc_info=True)
+            self._resultado_queue.put(("error", con_ruta_del_registro(str(e))))
         else:
             self._resultado_queue.put(("exito", (chart_out, ms_out, aviso)))
 
@@ -471,8 +484,18 @@ class App(tk.Tk):
 
 
 def main():
+    registro.configurar()
+    registro.registrar_excepciones_no_capturadas()
+    log.info("Aplicativo abierto (ROOT_DIR=%s)", config.ROOT_DIR)
     app = App()
+    # Errores dentro de un botón o una ventana: Tkinter los imprimiría en la
+    # consola, que el .exe no tiene. Se anotan y se le muestran al usuario.
+    def _error_de_ventana(tipo, valor, tb):
+        log.error("Error en la ventana", exc_info=(tipo, valor, tb))
+        messagebox.showerror("Error inesperado", con_ruta_del_registro(str(valor)))
+    app.report_callback_exception = _error_de_ventana
     app.mainloop()
+    log.info("Aplicativo cerrado")
 
 
 if __name__ == "__main__":
