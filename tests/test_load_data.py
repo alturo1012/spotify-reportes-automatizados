@@ -160,3 +160,49 @@ def test_tracks_unicos_separa_por_pais(tmp_path):
 
     assert len(u) == 2
     assert sorted(u["stream_count"]) == [100.0, 200.0]
+
+
+# --- revisar_fuente: avisos de fuente incompleta ---
+
+def _fuente_completa():
+    filas = [{"country_code": p, "position": pos, "stream_count": 1000.0}
+             for p in config.PAISES_MS for pos in range(1, 201)]
+    return pd.DataFrame(filas)
+
+
+def test_revisar_fuente_completa_no_avisa():
+    df = _fuente_completa()
+    # un track compartido viene en dos filas con la misma posición: es normal
+    df = pd.concat([df, df.iloc[[0]]], ignore_index=True)
+    assert load_data.revisar_fuente(df) == []
+
+
+def test_revisar_fuente_pais_faltante():
+    df = _fuente_completa()
+    avisos = load_data.revisar_fuente(df[df["country_code"] != "VE"])
+    assert len(avisos) == 1 and "Venezuela" in avisos[0]
+
+
+def test_revisar_fuente_pais_recortado():
+    df = _fuente_completa()
+    df = df[~((df["country_code"] == "PE") & (df["position"] > 150))]
+    avisos = load_data.revisar_fuente(df)
+    assert len(avisos) == 1
+    assert "Perú" in avisos[0] and "50 de 200" in avisos[0] and "la 151" in avisos[0]
+
+
+def test_revisar_fuente_streams_vacios_o_en_cero():
+    df = _fuente_completa()
+    df.loc[0, "stream_count"] = 0
+    df.loc[1, "stream_count"] = None
+    avisos = load_data.revisar_fuente(df)
+    assert len(avisos) == 1 and avisos[0].startswith("2 fila(s)")
+
+
+def test_revisar_fuente_real_de_la_semana_25():
+    """La fuente real de BigQuery (semana 25 de 2026) viene completa."""
+    from pathlib import Path
+    real = Path(__file__).resolve().parent.parent.parent / "fuentes" / "bq_sem25.xlsx"
+    if not real.exists():
+        pytest.skip("fuente real no disponible en este equipo")
+    assert load_data.revisar_fuente(load_data.load_source(real)) == []

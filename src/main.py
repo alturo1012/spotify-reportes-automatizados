@@ -50,36 +50,84 @@ def ultima_semana_guardada(anio: int):
     return int(del_anio.max()) if not del_anio.empty else "ninguna"
 
 
-def revisar_orden(fecha) -> str:
-    """Avisa si esta semana es ANTERIOR a la última cargada. Devuelve el
-    motivo, o None si viene en orden.
+class CargaBloqueada(Exception):
+    """La semana no se puede guardar sin desordenar el histórico. No se
+    guardó NADA ni se generó ningún reporte.
+
+    `se_puede_forzar` dice si el usuario puede decidir cargarla igual (una
+    semana que de verdad no existe en BigQuery) o si no hay forma segura de
+    hacerlo desde acá (una semana anterior a la última cargada).
+    """
+
+    def __init__(self, mensaje: str, se_puede_forzar: bool = False):
+        super().__init__(mensaje)
+        self.se_puede_forzar = se_puede_forzar
+
+
+# Las fuentes son semanales (una fecha de corte cada jueves). Más de esto
+# entre la última cargada y la nueva significa que se saltó al menos una.
+DIAS_ENTRE_SEMANAS = 7
+TOLERANCIA_DIAS = 3
+
+
+def semanas_faltantes(ultima, fecha) -> list:
+    """Las fechas de corte que deberían estar entre `ultima` y `fecha`."""
+    ultima, fecha = pd.Timestamp(ultima), pd.Timestamp(fecha)
+    faltan = []
+    siguiente = ultima + pd.Timedelta(days=DIAS_ENTRE_SEMANAS)
+    while siguiente < fecha - pd.Timedelta(days=TOLERANCIA_DIAS):
+        faltan.append(siguiente)
+        siguiente += pd.Timedelta(days=DIAS_ENTRE_SEMANAS)
+    return faltan
+
+
+def revisar_orden(fecha, permitir_hueco: bool = False) -> None:
+    """Detiene la carga (lanza CargaBloqueada) si guardar esta semana
+    desordenaría el histórico. No devuelve nada si viene en orden.
 
     Por qué importa: el número de semana se asigna por orden de carga (la
-    última guardada + 1), no por fecha. Si una semana se salta y se carga
-    después, se le asigna el número más alto y termina dibujada al FINAL de
-    la cuadrícula, detrás de semanas posteriores a ella -- y de paso todas
-    las que se cargaron en el medio quedan corridas un número.
+    última guardada + 1), no por fecha. Le pasó al usuario con el 20 de
+    agosto de 2026: esa semana no quedó en la base, se siguieron cargando las
+    siguientes, y la cuadrícula quedó con todo corrido un número. Antes el
+    programa guardaba y solo avisaba; arreglarlo después obligaba a
+    reconstruir el histórico entero. Ahora se detiene ANTES de guardar.
 
-    Le pasó al usuario con el 20 de agosto de 2026: esa semana no quedó en
-    la base (la base se volvió a sembrar y se perdió), se siguieron cargando
-    las siguientes, y la cuadrícula quedó 32, 33, 34 (27-ago), 35 (03-sep),
-    sin el 20-ago y con todo corrido. Cargarla en ese momento la habría
-    puesto al final, que es peor. La salida está en
-    `scripts/recargar_semanas.py`.
+    Dos casos:
+    - la semana es ANTERIOR a la última cargada: se bloquea siempre. La
+      única forma de meterla en su lugar es `scripts/recargar_semanas.py`;
+    - entre la última cargada y esta FALTAN semanas: se bloquea, pero se
+      puede forzar (`permitir_hueco`) si la semana que falta de verdad no
+      existe en BigQuery. La ventana pregunta antes de forzar.
     """
     ultima = history.ultima_fecha_cargada()
     if ultima is None:
-        return None
+        return
     fecha = pd.Timestamp(fecha)
-    if fecha >= ultima:
-        return None
-    return (
-        f"esta semana ({fecha.date()}) es ANTERIOR a la última que hay en el histórico "
-        f"({ultima.date()}). Se guardó igual, pero con el número más alto, así que en "
-        "las pestañas por país va a aparecer al final, fuera de orden. Para dejar la "
-        "numeración bien, corre `python -m scripts.recargar_semanas` con TODOS los "
-        "archivos fuente posteriores a la siembra: los vuelve a cargar en orden de fecha."
-    )
+    if fecha < ultima:
+        raise CargaBloqueada(
+            f"Esta fuente es del {fecha.date()}, ANTERIOR a la última semana que ya está en "
+            f"el histórico ({ultima.date()}). Si se guardara, quedaría con el número más alto "
+            "y aparecería al final de las pestañas por país, fuera de orden. No se guardó "
+            "nada ni se generó ningún reporte.\n\nSi de verdad falta esa semana en el "
+            "histórico, la forma de meterla en su lugar es correr "
+            "`python -m scripts.recargar_semanas` con TODAS las fuentes posteriores a la "
+            "semana 33 de 2026: las vuelve a cargar en orden de fecha.",
+            se_puede_forzar=False,
+        )
+    faltan = semanas_faltantes(ultima, fecha)
+    if faltan and not permitir_hueco:
+        lista = ", ".join(str(f.date()) for f in faltan)
+        raise CargaBloqueada(
+            f"Entre la última semana cargada ({ultima.date()}) y esta ({fecha.date()}) "
+            f"falta(n) {len(faltan)} semana(s): {lista}. Si se carga esta ahora, la que "
+            "falta ya no podrá entrar en su lugar. No se guardó nada.\n\nLo normal es "
+            "cargar primero la(s) que falta(n). Cárgala igual solo si esa semana de verdad "
+            "no existe en BigQuery.",
+            se_puede_forzar=True,
+        )
+    if faltan:
+        log.warning("Carga forzada con %s semana(s) faltante(s) antes de %s",
+                    len(faltan), fecha.date())
 
 
 def revisar_historico(fecha) -> str:
@@ -138,6 +186,11 @@ def main(argv=None):
         "--salida",
         help="Carpeta donde dejar los dos reportes (por defecto, data/output)",
     )
+    parser.add_argument(
+        "--permitir-hueco", action="store_true",
+        help="Cargar aunque falten semanas entre la última cargada y esta (solo si la "
+             "que falta no existe en BigQuery)",
+    )
     args = parser.parse_args(argv)
 
     registro.configurar()
@@ -147,6 +200,9 @@ def main(argv=None):
         avisos = _generar(args)
     except SystemExit as e:
         log.error("Semanal Spotify detenido: %s", e.code)
+        raise
+    except CargaBloqueada as e:
+        log.warning("Semanal Spotify bloqueado: %s", e)
         raise
     except Exception:
         log.exception("Error en el semanal de Spotify (fuente=%s)", args.fuente)
@@ -176,6 +232,9 @@ def _generar(args):
     fecha = fechas[0]
 
     avisos = []
+    for aviso in load_data.revisar_fuente(df):
+        avisos.append(aviso)
+        print(f"Aviso: {aviso}")
 
     ya_cargada = history.semana_ya_cargada(fecha)
     if ya_cargada:
@@ -193,11 +252,13 @@ def _generar(args):
     guardar_en_historico = not ya_cargada
 
     if guardar_en_historico:
-        for revision in (revisar_historico, revisar_orden):
-            aviso = revision(fecha)
-            if aviso:
-                avisos.append(aviso)
-                print(f"Aviso: {aviso}")
+        # Primero el orden: si no se puede guardar, se detiene acá, antes del
+        # respaldo y de escribir cualquier cosa.
+        revisar_orden(fecha, permitir_hueco=getattr(args, "permitir_hueco", False))
+        aviso = revisar_historico(fecha)
+        if aviso:
+            avisos.append(aviso)
+            print(f"Aviso: {aviso}")
 
     if guardar_en_historico:
         # Esta corrida va a escribir en la base: copia de seguridad antes.
@@ -218,4 +279,8 @@ def _generar(args):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except CargaBloqueada as e:
+        extra = ("\n\nPara cargarla igual: agrega --permitir-hueco." if e.se_puede_forzar else "")
+        sys.exit(f"{e}{extra}")

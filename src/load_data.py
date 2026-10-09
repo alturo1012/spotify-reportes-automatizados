@@ -187,3 +187,67 @@ def load_source(path: Path, sheet_name: str = None) -> pd.DataFrame:
 def filtrar_ultima_fecha(df: pd.DataFrame) -> pd.DataFrame:
     """Devuelve solo las filas marcadas como is_latest_date (semana vigente)."""
     return df[df["is_latest_date"] == True].copy()  # noqa: E712
+
+# Cuántas posiciones trae cada país en una fuente sana (el Top 200).
+POSICIONES_ESPERADAS = 200
+
+
+def revisar_fuente(df: pd.DataFrame) -> list:
+    """Revisa que la fuente de la semana venga completa y devuelve los
+    avisos (lista vacía si está bien). No detiene nada: los reportes se
+    generan igual, pero el usuario se entera ANTES de mandarlos.
+
+    Existe porque una fuente incompleta pasaba sin ruido: si un país venía
+    vacío (pasó con Venezuela) o recortado, el reporte salía igual, con ese
+    país en blanco o con conteos bajos, y solo se notaba abriendo el Excel.
+
+    Qué revisa, por país (config.PAISES_MS):
+    - que esté en la fuente;
+    - que traiga las 200 posiciones (1 a 200). Una posición puede venir en
+      dos filas cuando el track es compartido entre dos sellos: eso es
+      normal y no se cuenta como error;
+    - que ninguna fila venga sin streams o con streams en cero.
+    """
+    avisos = []
+    presentes = set(df["country_code"].dropna().unique())
+    faltan = [p for p in config.PAISES_MS if p not in presentes]
+    if faltan:
+        avisos.append(
+            f"la fuente no trae datos de {_nombres(faltan)}: en los reportes ese país "
+            "va a salir en blanco esta semana. Revisa la descarga de BigQuery."
+        )
+
+    incompletos = []
+    for pais in config.PAISES_MS:
+        if pais not in presentes:
+            continue
+        posiciones = pd.to_numeric(df.loc[df["country_code"] == pais, "position"], errors="coerce")
+        validas = set(posiciones.dropna().astype(int))
+        faltantes = [p for p in range(1, POSICIONES_ESPERADAS + 1) if p not in validas]
+        if faltantes:
+            incompletos.append(f"{_nombres([pais])} ({len(faltantes)} de {POSICIONES_ESPERADAS} "
+                               f"posiciones faltantes, por ejemplo la {faltantes[0]})")
+    if incompletos:
+        avisos.append(
+            "la fuente viene incompleta en " + "; ".join(incompletos) + ". Los conteos y el "
+            "market share de esos países van a salir bajos. Revisa la descarga de BigQuery."
+        )
+
+    streams = pd.to_numeric(df["stream_count"], errors="coerce")
+    sin_streams = df[streams.isna() | (streams <= 0)]
+    if not sin_streams.empty:
+        por_pais = sin_streams.groupby("country_code").size()
+        detalle = ", ".join(f"{_nombres([p])}: {n}" for p, n in por_pais.items())
+        avisos.append(
+            f"{len(sin_streams)} fila(s) de la fuente vienen sin streams o en cero ({detalle}). "
+            "Cuentan como tracks pero no suman al market share."
+        )
+    return avisos
+
+
+_CON_TILDE = {"PE": "Perú", "PN": "Panamá", "MX": "México", "DO": "Rep. Dominicana"}
+
+
+def _nombres(codigos) -> str:
+    nombres = [_CON_TILDE.get(c) or config.NOMBRE_PAIS_MS_RESUMEN.get(c, c).title() for c in codigos]
+    return ", ".join(nombres)

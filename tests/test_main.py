@@ -186,29 +186,64 @@ def test_ultima_semana_guardada_reporta_hasta_donde_llega_el_historico(tmp_path)
 
 
 # --- semana cargada fuera de orden (el hueco del 20-ago-2026) ---
+# Antes se guardaba y se avisaba; ahora se detiene ANTES de guardar.
 
-def test_avisa_cuando_la_semana_es_anterior_a_la_ultima_cargada(tmp_path):
-    # Si una semana se salta y se carga después, el número que le toca es el
-    # más alto y queda dibujada al final de la cuadrícula. Hay que decirlo.
+def _cargar(tmp_path, fecha, semana, *extra):
+    carpeta = tmp_path / fecha
+    carpeta.mkdir(exist_ok=True)
+    return main.main(["--fuente", str(_fuente_minima(carpeta, chart_date=fecha)),
+                      "--semana", str(semana), "--salida", str(carpeta / "out"), *extra])
+
+
+def test_bloquea_una_semana_anterior_a_la_ultima_cargada(tmp_path):
     history.seed_historico(*_seed_vacio())
-    main.main(["--fuente", str(_fuente_minima(tmp_path, chart_date="2026-09-03")),
-               "--semana", "36"])
+    _cargar(tmp_path, "2026-09-03", 36)
+    filas_antes = len(history.cargar_ms_band_label_weekly())
 
-    aviso = main.revisar_orden(pd.Timestamp("2026-08-20"))
-    assert aviso is not None
-    assert "ANTERIOR" in aviso
-    assert "recargar_semanas" in aviso
+    with pytest.raises(main.CargaBloqueada) as e:
+        _cargar(tmp_path, "2026-08-20", 34)
+    assert "ANTERIOR" in str(e.value) and "recargar_semanas" in str(e.value)
+    assert e.value.se_puede_forzar is False
+    # No se guardó nada ni se generó el reporte
+    assert len(history.cargar_ms_band_label_weekly()) == filas_antes
+    assert not (tmp_path / "2026-08-20" / "out").exists()
+
+    # Ni siquiera forzando: para esto está recargar_semanas
+    with pytest.raises(main.CargaBloqueada):
+        _cargar(tmp_path, "2026-08-20", 34, "--permitir-hueco")
 
 
-def test_no_avisa_de_orden_cuando_la_semana_es_la_siguiente(tmp_path):
+def test_bloquea_si_faltan_semanas_en_el_medio_y_dice_cuales(tmp_path):
     history.seed_historico(*_seed_vacio())
-    main.main(["--fuente", str(_fuente_minima(tmp_path, chart_date="2026-08-20")),
-               "--semana", "34"])
+    _cargar(tmp_path, "2026-08-20", 34)
 
-    assert main.revisar_orden(pd.Timestamp("2026-08-27")) is None
-    # y volver a cargar la MISMA fecha tampoco es "fuera de orden"
-    assert main.revisar_orden(pd.Timestamp("2026-08-20")) is None
+    with pytest.raises(main.CargaBloqueada) as e:
+        _cargar(tmp_path, "2026-09-10", 37)
+    assert e.value.se_puede_forzar is True
+    assert "2026-08-27" in str(e.value) and "2026-09-03" in str(e.value)
+    assert history.ultima_fecha_cargada() == pd.Timestamp("2026-08-20")
 
 
-def test_no_avisa_de_orden_con_el_historico_vacio(tmp_path):
-    assert main.revisar_orden(pd.Timestamp("2026-08-20")) is None
+def test_con_permitir_hueco_carga_igual(tmp_path):
+    history.seed_historico(*_seed_vacio())
+    _cargar(tmp_path, "2026-08-20", 34)
+    _cargar(tmp_path, "2026-09-10", 37, "--permitir-hueco")
+    assert history.ultima_fecha_cargada() == pd.Timestamp("2026-09-10")
+
+
+def test_la_semana_siguiente_y_la_misma_fecha_pasan(tmp_path):
+    history.seed_historico(*_seed_vacio())
+    _cargar(tmp_path, "2026-08-20", 34)
+    main.revisar_orden(pd.Timestamp("2026-08-27"))          # la siguiente: no lanza
+    _cargar(tmp_path, "2026-08-27", 35)
+    avisos = _cargar(tmp_path, "2026-08-20", 34)            # misma fecha: regenera, no bloquea
+    assert any("ya estaba" in a.lower() for a in avisos)
+
+
+def test_cambio_de_anio_no_es_un_hueco():
+    assert main.semanas_faltantes("2026-12-31", "2027-01-07") == []
+    assert [str(f.date()) for f in main.semanas_faltantes("2026-12-24", "2027-01-07")] == ["2026-12-31"]
+
+
+def test_no_bloquea_con_el_historico_vacio(tmp_path):
+    main.revisar_orden(pd.Timestamp("2026-08-20"))
