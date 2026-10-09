@@ -16,9 +16,10 @@ se ACTUALIZA con semanas nuevas, correr el script las agrega sin problema;
 pero si se corrigiera un valor ya cargado, hay que borrar
 `data/history/universal_data.db` y volver a sembrar para que tome el nuevo.
 """
-from src import history
+from src import history, registro
 
 if __name__ == "__main__":
+    registro.configurar()
     history.seed_historico()
 
     tablas = [

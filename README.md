@@ -4,7 +4,7 @@ Aplicativo en Python que genera los reportes de charts y market share de
 Spotify Latam y los reportes BMAT, a partir de las fuentes semanales. Reemplaza
 el proceso manual en Excel/VBA.
 
-Versión de entrega: `v1.0` (rama `main`).
+Versión de entrega: `v1.1` (rama `main`).
 
 ## Qué genera
 
@@ -38,9 +38,11 @@ spotify-reportes-automatizados/
 │   ├── output/               # Reportes generados — no se sube a git
 │   ├── history/
 │   │   ├── seed/             # Histórico sembrado (CSV) — sí se sube a git
-│   │   └── universal_data.db # Base SQLite local — no se sube a git
+│   │   ├── universal_data.db # Base SQLite local — no se sube a git
+│   │   └── respaldos/        # Copias automáticas de la base — no se sube a git
 │   ├── release_date.db       # Fechas de lanzamiento ya conocidas (solo lectura)
 │   ├── bmat_titularidad_compartida.xlsx  # Tracks BMAT con dueño compartido (editable)
+│   ├── logs/                 # Registro de errores (aplicativo.log) — no se sube a git
 │   └── preferencias.json     # Última carpeta de salida usada — se crea sola
 ├── scripts/
 │   ├── sembrar_historico.py  # Crea la base a partir de data/history/seed/
@@ -62,9 +64,11 @@ spotify-reportes-automatizados/
 │   ├── bmat.py               # Excel de los reportes BMAT
 │   ├── spotify_release_dates.py  # Fechas de lanzamiento (caché, base local, API)
 │   ├── preferencias.py       # Carpeta de salida recordada
+│   ├── respaldo.py           # Respaldo automático de la base
+│   ├── registro.py           # Registro de errores en data/logs/
 │   ├── main.py               # Proceso semanal por línea de comandos
 │   └── gui.py                # Ventana del aplicativo
-├── tests/                    # 203 pruebas automáticas
+├── tests/                    # 216 pruebas automáticas
 ├── run_gui.py                # Punto de entrada del ejecutable
 ├── build.bat                 # Genera ReportesSpotifyLatam.exe (Windows)
 ├── .env.example              # Plantilla de credenciales de Spotify
@@ -117,6 +121,32 @@ avisos, hay que leerlos: dicen qué quedó incompleto y cómo arreglarlo.
 No muevas el `.exe` fuera de esta carpeta: necesita estar junto a `data/` y a
 `.env`. Si lo mueves, lleva las dos cosas con él.
 
+### BMAT: la lista de tracks para revisar
+
+En el proceso manual, a cada track se le ponía a mano la columna "Disqueras"
+(la major dueña o, si es independiente, su distribuidora). El aplicativo lo
+hace solo: los tracks ya conocidos toman su clasificación por ISRC, y los
+nuevos se clasifican con la clasificación más común de su distribuidora, que
+acierta alrededor del 97%.
+
+`Revisar clasificacion BMAT sem NN de AAAA.xlsx` trae solo esos tracks nuevos.
+Los reportes de la semana ya salen completos aunque no se revise.
+
+1. Empezar por los de prioridad **Alta** (en rojo): están en el Top 200 de
+   algún mercado o su regla tiene menos de 90% de confianza.
+2. Comparar "Disqueras asignada" y "Sello asignado" contra "Disquera
+   original" y "Distribuidora original". Si está bien, no hacer nada.
+3. Si está mal, escribir la clasificación correcta en la columna amarilla
+   "Disqueras corregida": una major de la lista desplegable o, si es
+   independiente, el nombre de su distribuidora.
+4. Guardar y volver a generar la misma carpeta de WK, eligiendo la lista
+   corregida en el campo opcional.
+
+Las correcciones quedan guardadas: el track sale bien en las semanas
+siguientes y no vuelve a la lista. Si no se revisa, queda guardada la
+clasificación de la regla; las semanas ya generadas solo cambian si se
+vuelven a generar. Como mínimo, revisar los de prioridad Alta cada semana.
+
 ## Uso por línea de comandos
 
 ```powershell
@@ -150,6 +180,34 @@ regenerar por completo. **Hay que respaldarlo.**
 `recargar_semanas` vacía y reconstruye el histórico de Spotify. No toca BMAT ni
 las fechas de lanzamiento ya resueltas.
 
+### Respaldos automáticos
+
+Antes de cada proceso que escribe en la base (semanal con una fecha nueva,
+mensual, BMAT, `recargar_semanas` y `completar_semanas`), el aplicativo guarda
+una copia comprimida en `data/history/respaldos/`, por ejemplo
+`universal_data_2026-10-09_153012_semanal.zip`. El final del nombre dice qué
+proceso vino después de la copia. Se conservan las últimas 15 (unos 12 MB
+cada una); las más viejas se borran solas.
+
+Si un respaldo falla, el proceso sigue y la falla queda en el registro. La
+excepción es `recargar_semanas`: si no puede respaldar, no vacía nada.
+
+**Para restaurar:** cerrar el aplicativo, descomprimir el `.zip` elegido y
+poner el `universal_data.db` que trae en `data/history/`, reemplazando el
+actual. Conviene guardar aparte la base actual antes de reemplazarla.
+
+Los respaldos protegen contra un error de carga, no contra perder el equipo:
+hay que seguir copiando `data/history/` a otro lugar (Drive, OneDrive o un
+disco externo) de vez en cuando.
+
+### Registro de errores
+
+Todo lo que pasa queda anotado en `data/logs/aplicativo.log`: cada proceso con
+sus archivos de entrada y salida, los avisos mostrados, los respaldos y los
+errores con su detalle técnico completo. Cuando algo falla, la ventana muestra
+la ruta de ese archivo; es lo que hay que enviar para pedir ayuda. El archivo
+rota solo y nunca pasa de unos 6 MB.
+
 ## Reglas de negocio
 
 Confirmadas por el área. No se cambian sin preguntar.
@@ -178,7 +236,7 @@ Confirmadas por el área. No se cambian sin preguntar.
 pytest -q
 ```
 
-Deben pasar las 203. Las de la ventana necesitan `tkinter` (viene con el
+Deben pasar las 216. Las de la ventana necesitan `tkinter` (viene con el
 Python de Windows).
 
 Después de cualquier cambio de código hay que volver a correr `build.bat`: el

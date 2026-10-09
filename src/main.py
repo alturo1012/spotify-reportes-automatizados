@@ -15,12 +15,15 @@ Uso:
    uno recalculado con TODO el histórico acumulado hasta esa semana.
 """
 import argparse
+import logging
 import sys
 from pathlib import Path
 
 import pandas as pd
 
-from . import chart_semanal, config, history, load_data, market_share
+from . import chart_semanal, config, history, load_data, market_share, registro, respaldo
+
+log = logging.getLogger(__name__)
 
 
 # Cuántas semanas de diferencia se toleran entre el número que le vamos a
@@ -137,6 +140,24 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
+    registro.configurar()
+    log.info("Semanal Spotify: fuente=%s semana=%s salida=%s", args.fuente, args.semana,
+             args.salida or config.OUTPUT_DIR)
+    try:
+        avisos = _generar(args)
+    except SystemExit as e:
+        log.error("Semanal Spotify detenido: %s", e.code)
+        raise
+    except Exception:
+        log.exception("Error en el semanal de Spotify (fuente=%s)", args.fuente)
+        raise
+    for aviso in avisos:
+        log.warning("Aviso mostrado: %s", aviso)
+    log.info("Semanal Spotify terminado")
+    return avisos
+
+
+def _generar(args):
     salida = Path(args.salida) if args.salida else config.OUTPUT_DIR
 
     fuente_path = Path(args.fuente)
@@ -178,6 +199,10 @@ def main(argv=None):
                 avisos.append(aviso)
                 print(f"Aviso: {aviso}")
 
+    if guardar_en_historico:
+        # Esta corrida va a escribir en la base: copia de seguridad antes.
+        respaldo.respaldar("semanal")
+
     salida.mkdir(parents=True, exist_ok=True)
 
     chart_out = salida / f"Reporte_Chart_Top_Semanal_Sem_{args.semana}.xlsx"
@@ -187,6 +212,7 @@ def main(argv=None):
     ms_out = salida / f"Reporte_MS_TOP200_Sem_{args.semana}.xlsx"
     market_share.generar_reporte(df, ms_out, guardar_en_historico=guardar_en_historico)
     print(f"Reporte de market share generado: {ms_out}")
+    log.info("Reportes: %s | %s", chart_out, ms_out)
 
     return avisos
 

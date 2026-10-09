@@ -31,6 +31,15 @@ ROOT_DIR = _calcular_root_dir()
 RAW_DIR = ROOT_DIR / "data" / "raw"
 OUTPUT_DIR = ROOT_DIR / "data" / "output"
 
+# Registro de errores y actividad (ver src/registro.py). Junto a `data/`
+# para que viaje con el .exe.
+LOG_DIR = ROOT_DIR / "data" / "logs"
+
+# Cuántas copias de la base guarda el respaldo automático (ver
+# src/respaldo.py). Cada una pesa ~12 MB comprimida: 15 copias ~180 MB, que
+# alcanzan para unas tres semanas de uso normal (semanal + BMAT + mensual).
+RESPALDOS_A_CONSERVAR = 15
+
 # Base de datos EXTERNA de fechas de lanzamiento, traída del proyecto
 # anterior del usuario (la que maneja release_date_management.py). Tiene la
 # tabla `track (uri, release_date)`, donde `uri` es el id de track de

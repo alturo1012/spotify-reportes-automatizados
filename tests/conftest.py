@@ -31,3 +31,10 @@ def salida_temporal(tmp_path, monkeypatch):
     PermissionError."""
     monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path / "conftest_output")
 
+
+@pytest.fixture(autouse=True)
+def logs_temporales(tmp_path, monkeypatch):
+    """El registro de errores de las pruebas va a una carpeta temporal, nunca
+    a data/logs/ (ahí solo debe quedar lo que pasó de verdad)."""
+    monkeypatch.setattr(config, "LOG_DIR", tmp_path / "conftest_logs")
+

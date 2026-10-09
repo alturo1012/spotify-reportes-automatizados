@@ -33,3 +33,7 @@ build_pyinstaller/
 *.spec
 ReportesSpotifyLatam.exe
 .cache
+
+# Respaldos automáticos de la base y registro de errores: son locales de cada equipo
+data/history/respaldos/
+data/logs/
