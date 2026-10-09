@@ -73,21 +73,23 @@ spotify-reportes-automatizados/
 │   ├── version.py            # Número de versión del aplicativo
 │   ├── main.py               # Proceso semanal por línea de comandos
 │   └── gui.py                # Ventana del aplicativo
-├── tests/                    # 232 pruebas automáticas
+├── tests/                    # 237 pruebas automáticas
 ├── run_gui.py                # Punto de entrada del ejecutable
 ├── build.bat                 # Genera ReportesSpotifyLatam.exe (Windows)
 ├── .env.example              # Plantilla de credenciales de Spotify
-└── requirements.txt
+├── requirements.txt          # Dependencias directas, versiones exactas
+└── requirements-lock.txt     # Entorno completo validado (lo usa build.bat)
 ```
 
 ## Instalación (una sola vez)
 
-En Windows, desde la carpeta del repositorio:
+En Windows, con **Python 3.11** (el aplicativo se validó con 3.11.9), desde la
+carpeta del repositorio:
 
 ```powershell
-python -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-lock.txt
 python -m scripts.sembrar_historico
 copy .env.example .env
 ```
@@ -215,6 +217,28 @@ menor (por ejemplo `WK01` después de la `WK52`) es del año siguiente. Si el a�
 que asigna no es el actual, lo avisa. Para cargar una semana de otro año a
 propósito se usa `--anio`.
 
+## Versiones fijas
+
+Las librerías están fijadas a la versión exacta con la que pasan las pruebas:
+
+- `requirements.txt`: lo que el código usa directamente (pandas, openpyxl,
+  spotipy, python-dotenv, python-dateutil), con `==`.
+- `requirements-lock.txt`: el entorno completo, incluidas las dependencias de
+  esas librerías, pytest y PyInstaller. Es lo que se instala y lo que usa
+  `build.bat`, así que cualquier equipo arma el mismo ejecutable.
+
+`build.bat` avisa si el `.venv` no es de Python 3.11.
+
+**Para actualizar una librería a propósito:**
+
+1. Cambiar su versión en `requirements.txt` e instalarla
+   (`pip install pandas==X.Y.Z`).
+2. Correr `pytest -q`. Si algo falla, volver a la versión anterior.
+3. Si todo pasa, regenerar el lock con `pip freeze > requirements-lock.txt`,
+   revisar que no se hayan colado librerías ajenas y volver a poner el
+   encabezado de comentarios.
+4. `build.bat` y subir los dos archivos juntos.
+
 ## Mantenimiento del histórico
 
 El archivo `data/history/universal_data.db` es lo único que no se puede
@@ -286,7 +310,7 @@ Confirmadas por el área. No se cambian sin preguntar.
 pytest -q
 ```
 
-Deben pasar las 232. Las de la ventana necesitan `tkinter` (viene con el
+Deben pasar las 237. Las de la ventana necesitan `tkinter` (viene con el
 Python de Windows).
 
 Después de cualquier cambio de código hay que volver a correr `build.bat`: el
