@@ -1,6 +1,11 @@
-pandas>=2.0
-openpyxl>=3.1
-google-cloud-bigquery>=3.11   # si luego se conecta directo a BigQuery en vez del xlsx
-python-dateutil>=2.8
-spotipy>=2.23                 # API de Spotify, para la fecha de lanzamiento (ver src/spotify_release_dates.py)
-python-dotenv>=1.0            # lee SPOTIFY_CLIENT_ID/SECRET de un archivo .env (ver .env.example)
+# Dependencias directas del aplicativo, con la versión EXACTA con la que se
+# validó (232 pruebas, Python 3.11.9, Windows). Para instalar, usa
+# requirements-lock.txt: fija además las dependencias de estas.
+#
+# Para actualizar una versión a propósito: cámbiala aquí, instala, corre
+# pytest y, si pasa, regenera el lock (ver README, "Versiones fijas").
+pandas==3.0.5
+openpyxl==3.1.5
+python-dateutil==2.9.0.post0
+spotipy==2.26.0               # API de Spotify, para la fecha de lanzamiento (ver src/spotify_release_dates.py)
+python-dotenv==1.2.3          # lee SPOTIFY_CLIENT_ID/SECRET de un archivo .env (ver .env.example)

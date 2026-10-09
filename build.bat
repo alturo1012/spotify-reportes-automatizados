@@ -7,15 +7,33 @@ echo.
 if not exist ".venv\Scripts\activate.bat" (
     echo No se encontro el entorno virtual .venv en esta carpeta.
     echo Primero sigue los pasos de configuracion del proyecto ^(crear y activar
-    echo .venv, instalar requirements.txt^) antes de correr este script.
+    echo .venv con Python 3.11, instalar requirements-lock.txt^) antes de correr este script.
     pause
     exit /b 1
 )
 
 call .venv\Scripts\activate.bat
 
-echo Instalando PyInstaller ^(si ya esta instalado, esto es rapido^)...
-pip install pyinstaller >nul 2>&1
+rem Version de Python: el aplicativo se valido con 3.11. Con otra puede
+rem armarse igual, pero el resultado no esta garantizado.
+python -c "import sys; sys.exit(0 if sys.version_info[:2] == (3, 11) else 1)"
+if errorlevel 1 (
+    echo.
+    echo AVISO: este entorno no usa Python 3.11, que es con el que se valido el aplicativo.
+    python --version
+    echo Se puede seguir, pero conviene crear el .venv con Python 3.11.
+    echo.
+    pause
+)
+
+echo Instalando las versiones exactas de requirements-lock.txt ^(si ya estan, esto es rapido^)...
+pip install -r requirements-lock.txt >nul 2>&1
+if errorlevel 1 (
+    echo No se pudieron instalar las dependencias de requirements-lock.txt.
+    echo Corre a mano: pip install -r requirements-lock.txt  ^(para ver el error^)
+    pause
+    exit /b 1
+)
 
 echo.
 echo Generando el ejecutable...
